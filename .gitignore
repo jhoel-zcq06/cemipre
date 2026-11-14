@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.sqlite3
+.pytest_cache/
+# Node
+node_modules/
+dist/
+.vite/
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+# Local editors / operating systems
+.DS_Store
+.vscode/
+.idea/
+# Logs
+*.log
