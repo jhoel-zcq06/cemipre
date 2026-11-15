@@ -138,7 +138,7 @@ async function callAiPrompt(prompt: string, systemPrompt: string): Promise<{ tex
     };
   }
 
-  const model = (Deno.env.get('AI_MODEL') || 'gemini-2.5-flash').trim();
+  const model = (Deno.env.get('AI_MODEL') || 'gemini-3.8-flash').trim();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: 'POST',

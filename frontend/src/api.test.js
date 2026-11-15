@@ -74,7 +74,7 @@ describe('Mapeo de respuestas y manejo de errores', () => {
       nombre: 'Usuario 001',
       cantidad_bitacoras: 7,
       bitacoras_leidas: 5,
-      modelo: 'gemini/gemini-2.5-flash',
+      modelo: 'gemini/gemini-3.8-flash',
       estado_general: 'Evolución estable.',
       avances_recientes: [{ punto: 'Participó en taller', fuente: 'Actividades', fecha: '2026-11-10' }],
     });

@@ -29,7 +29,7 @@ Esta guía detalla la configuración de Google Cloud, Supabase Edge Functions, p
   - Reemplaza teléfonos por `[TELEFONO-OMITIDO]`.
   - Sustituye el nombre completo por `Usuario <CODIGO>`.
 - Si el historial supera el presupuesto seguro de contexto (`32 000` caracteres), realiza síntesis por bloques antes del resumen final.
-- Soporta **Gemini** (`AI_PROVIDER=gemini`, por defecto `gemini-2.5-flash`) y **OpenAI** (`AI_PROVIDER=openai`, por defecto `gpt-4o-mini`).
+- Soporta **Gemini** (`AI_PROVIDER=gemini`, por defecto `gemini-3.8-flash`) y **OpenAI** (`AI_PROVIDER=openai`, por defecto `gpt-4o-mini`).
 - Registra en `actividad` únicamente metadatos de auditoría (sin almacenar prompts ni texto clínico).
 
 ## 3. Notificaciones automáticas (`notificar-cambios`)
