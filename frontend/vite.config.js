@@ -4,12 +4,27 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: true,
     port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://127.0.0.1:8000',
-        changeOrigin: true,
+    allowedHosts: true,
+  },
+  preview: {
+    host: true,
+    port: 4173,
+    allowedHosts: true,
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-supabase': ['@supabase/supabase-js'],
+        },
       },
     },
+  },
+  test: {
+    environment: 'jsdom',
+    globals: false,
   },
 });

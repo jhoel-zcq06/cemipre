@@ -1,21 +1,26 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-*.sqlite3
-.pytest_cache/
-# Node
+# Node / Frontend
 node_modules/
 dist/
 .vite/
+coverage/
+
+# Supabase local & secrets
+supabase/.temp/
+supabase/.branches/
+supabase/.env
+
 # Secrets / local configuration
 .env
 .env.*
 !.env.example
+*service-account*.json
+*credentials*.json
+google-*.json
+
 # Local editors / operating systems
 .DS_Store
 .vscode/
 .idea/
+
 # Logs
 *.log

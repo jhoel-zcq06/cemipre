@@ -1,0 +1,26 @@
+# Configuración base de Supabase CLI para CEMIPRE Plataforma
+project_id = "cemipre-plataforma"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[functions.sync-drive]
+verify_jwt = false
+
+[functions.resumen-usuario]
+verify_jwt = false
+
+[functions.notificar-cambios]
+verify_jwt = false

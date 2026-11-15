@@ -1,161 +1,139 @@
 # CEMIPRE · Plataforma colaborativa de bitácoras
 
-Prototipo universitario **local** para organizar personas usuarias y sus bitácoras, registrar enlaces a Google Docs y gestionar una agenda de prueba. El objetivo es permitir que el equipo desarrolle el proyecto en paralelo y conecte los servicios reales por etapas.
+Plataforma web centralizada para la **Fundación CEMIPRE** (Viña del Mar) para gestionar fichas de personas usuarias, vincular y sincronizar sus bitácoras en **Google Docs**, recibir avisos automáticos por correo ante modificaciones y generar resúmenes asistidos por **IA**.
 
-> [!WARNING]
-> **NO usar datos personales ni publicar este MVP en Internet.** No tiene autenticación de trabajadores ni control de permisos. La base de datos de ejemplo contiene solo información inventada. Google Drive, Gmail, Google Calendar y la IA todavía **no están integrados**. El resumen mostrado es una simulación explícitamente identificada.
+> [!IMPORTANT]
+> **Privacidad y datos reales:** Carga datos reales de personas atendidas únicamente después de aplicar las migraciones de autenticación y Row Level Security (`supabase/migrations/0002_auth_y_rls.sql`), activar Supabase Auth y aprobar los perfiles del equipo.
 
-## Funciones que ya existen
+## Arquitectura (React + Supabase + Google Docs)
 
-- Listar, buscar y registrar personas usuarias (códigos de ejemplo).
-- Mostrar unas siete bitácoras por persona y crear nuevas fichas.
-- Guardar o corregir un enlace seguro de Google Docs y abrirlo en otra pestaña. Los cambios al contenido **se hacen en Google Docs**, no aquí.
-- Mostrar un **resumen ilustrativo sin IA**, armado a partir de extractos inventados en SQLite.
-- Crear, listar y eliminar eventos en un calendario local (todavía no en Google Calendar).
-- Ver un registro de los cambios realizados **en esta plataforma**, no de las ediciones en Google Docs.
-- Diseño oscuro, responsive y usable por teclado en funciones principales.
-- API Django con validación básica y protección CSRF en operaciones de escritura.
-- Pruebas automáticas iniciales para el backend y CI en GitHub Actions.
+| Capa | Tecnología | Ubicación |
+| --- | --- | --- |
+| Interfaz web | React 19 + Vite + CSS accesible | `frontend/` |
+| Base de datos y Auth | Supabase (PostgreSQL + RLS + Supabase Auth) | `supabase/schema.sql`, `supabase/migrations/` |
+| Lógica de servidor | Supabase Edge Functions (Deno TypeScript) | `supabase/functions/` |
+| Documentos colaborativos | Google Drive API + Google Docs API (Service Account) | `supabase/functions/_shared/google.ts` |
+| Resúmenes IA | Gemini API o OpenAI API (con minimización previa) | `supabase/functions/resumen-usuario/` |
+| Notificaciones | Resend / Webhook + `pg_cron` o GitHub Actions | `supabase/functions/notificar-cambios/` |
 
-## Tecnologías
+## Estructura del repositorio
 
-| Parte | Tecnología |
-| --- | --- |
-| Frontend | React + Vite + CSS |
-| Backend | Django 5.2 LTS (API JSON) |
-| Base de datos local | SQLite |
-| Futuras integraciones | Google Drive/Docs, correo, modelo de IA, Google Calendar |
-
-## Requisitos
-
-- Python 3.10+ (recomendado Python 3.12 o 3.13)
-- Node.js 20.19+ (o 22+)
-- Git (para trabajo colaborativo)
-- Internet **durante la instalación** de paquetes Python y Node. Luego se puede usar en modo local.
-
-## Instalación en macOS / Linux
-
-Abre una terminal en la carpeta del repositorio y ejecuta lo siguiente.
-
-### Terminal 1: backend
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python manage.py migrate
-python manage.py seed_demo
-python manage.py runserver 127.0.0.1:8000
+```text
+cemipre-plataforma/
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx                   # Sesión Supabase, navegación y estado global
+│   │   ├── api.js                    # Cliente Supabase, validaciones y Edge Functions
+│   │   ├── api.test.js               # Pruebas unitarias y accesibilidad (Vitest)
+│   │   ├── styles.css                # Tema oscuro accesible y responsive
+│   │   └── components/
+│   │       ├── LoginView.jsx         # Login Email/Google y pantalla rol pendiente
+│   │       ├── Modals.jsx            # Modales con focus trap y retorno de foco
+│   │       ├── SharedUI.jsx          # Paginación, avisos aria-live y resumen IA
+│   │       ├── DashboardViews.jsx    # Inicio, Resúmenes IA y Favoritos
+│   │       └── WorkspaceViews.jsx    # Usuarios, Bitácoras, Calendario, Drive, Avisos, Admin
+│   ├── .env.example
+│   ├── package.json
+│   └── vite.config.js
+├── supabase/
+│   ├── schema.sql                    # Esquema base
+│   ├── seed.sql                      # Datos ficticios para desarrollo
+│   ├── config.toml                   # Configuración Supabase CLI
+│   ├── .env.example                  # Plantilla de secretos para Edge Functions
+│   ├── migrations/
+│   │   ├── 0001_schema_inicial.sql
+│   │   ├── 0002_auth_y_rls.sql
+│   │   ├── 0003_drive_sync_y_notificaciones.sql
+│   │   ├── 0004_cron_notificaciones.sql
+│   │   └── 0005_ux_favoritos_y_comentarios.sql
+│   └── functions/
+│       ├── _shared/                  # CORS, Auth JWT y conector Google RS256
+│       ├── sync-drive/               # Sincronización de carpetas y Docs
+│       ├── resumen-usuario/          # Lectura real de Docs + resumen IA
+│       └── notificar-cambios/        # Drive Changes API + envío de correos
+├── docs/
+│   ├── INTEGRACIONES.md              # Guía técnica Google Cloud, IA, correo y deploy
+│   └── GUIA_USO_CEMIPRE.md           # Guía de capacitación para trabajadores
+├── .github/workflows/
+│   ├── ci.yml                        # Tests Vitest, build Vite, Deno check y control secretos
+│   └── notificar-cambios.yml         # Scheduler cada 10 min (alternativa Free Tier)
+└── vercel.json                       # Configuración de despliegue SPA en Vercel
 ```
 
-En Windows PowerShell, la activación es `.venv\Scripts\Activate.ps1` en lugar de `source ...`.
+## Requisitos previos
 
-### Terminal 2: frontend
+- **Node.js** 20.19+ (o 22+) y `npm`
+- **Cuenta y proyecto en Supabase** (https://supabase.com)
+- **Supabase CLI** (opcional para desarrollo/despliegue de Edge Functions desde terminal)
+- **Google Cloud Project** con Google Drive API y Google Docs API habilitadas (Service Account)
 
-Desde la carpeta raíz del repositorio:
+## Puesta en marcha local (Frontend)
+
+1. Instala dependencias del frontend:
 
 ```bash
 cd frontend
 npm install
-npm run dev
 ```
 
-Abre **http://127.0.0.1:5173** en el navegador. La interfaz llamará a Django mediante el proxy configurado en `frontend/vite.config.js`.
-
-Si aparecen errores de conexión, comprueba que ambas terminales siguen en ejecución. El endpoint **http://127.0.0.1:8000/api/health/** debe devolver un JSON con `status: ok`.
-
-### Ejecutar pruebas
+2. Crea tu archivo de entorno local (ignorado por Git):
 
 ```bash
-cd backend
-source .venv/bin/activate
-python manage.py test
-python manage.py check
+cp .env.example .env.local
 ```
 
-Prueba de compilación del frontend:
+Completa `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` con las credenciales públicas (**Project Settings → API**) de tu proyecto Supabase.
+
+3. Ejecuta las pruebas, compila o inicia el servidor de desarrollo:
 
 ```bash
-cd frontend
-npm run build
+npm test         # Ejecuta las pruebas unitarias con Vitest
+npm run dev      # Inicia Vite en http://127.0.0.1:5173
+npm run build    # Compila la versión de producción en frontend/dist/
 ```
 
-## Estructura
+## Configuración de Supabase (Base de datos y Auth)
 
-```text
-cemipre-plataforma/
-├── backend/
-│   ├── cemipre/              # Configuración Django y rutas principales
-│   ├── core/
-│   │   ├── models.py         # Personas, bitácoras, eventos, actividad
-│   │   ├── views.py          # Endpoints de la API
-│   │   ├── urls.py
-│   │   ├── tests.py          # Pruebas de backend
-│   │   ├── migrations/
-│   │   └── management/commands/seed_demo.py
-│   ├── requirements.txt
-│   └── manage.py
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx           # Pantallas principales y formularios
-│   │   ├── api.js            # Cliente de la API Django
-│   │   ├── styles.css        # Estilos responsive
-│   │   └── main.jsx
-│   ├── package.json
-│   └── vite.config.js
-├── docs/INTEGRACIONES.md
-├── TAREAS.md
-├── CONTRIBUTING.md
-└── .github/workflows/ci.yml
+1. En **SQL Editor** de Supabase (o usando `supabase db push` tras `supabase link`), ejecuta en orden:
+   - `supabase/migrations/0001_schema_inicial.sql` (o `supabase/schema.sql`)
+   - `supabase/migrations/0002_auth_y_rls.sql`
+   - `supabase/migrations/0003_drive_sync_y_notificaciones.sql`
+   - `supabase/migrations/0004_cron_notificaciones.sql`
+   - `supabase/migrations/0005_ux_favoritos_y_comentarios.sql`
+   - *(Opcional solo en entorno de pruebas)* `supabase/seed.sql`
+2. En **Authentication → Providers**, activa **Email** y, si el equipo lo requiere, **Google** (configurando Redirect URL hacia tu dominio / `http://127.0.0.1:5173`).
+3. Registra la primera cuenta de administrador en la app y promuévela una sola vez desde SQL Editor:
+
+```sql
+update public.perfiles
+set rol = 'admin'
+where email = 'tu-correo@cemipre.cl';
 ```
 
-## API disponible
+Desde ese momento el administrador puede aprobar cuentas nuevas o añadir correos a la lista blanca directamente desde la pestaña **Administración** de la plataforma.
 
-| Método | Ruta | Función |
-| --- | --- | --- |
-| GET | `/api/health/` | Estado del backend |
-| GET | `/api/personas/` | Listar personas y cantidad de bitácoras |
-| POST | `/api/personas/` | Crear persona de prueba |
-| GET | `/api/personas/<id>/` | Detalle y bitácoras |
-| GET | `/api/personas/<id>/resumen/` | Resumen ficticio **sin IA** |
-| POST | `/api/bitacoras/` | Registrar una ficha de bitácora |
-| PATCH | `/api/bitacoras/<id>/` | Cambiar título o enlace Docs |
-| GET | `/api/eventos/` | Listar agenda local |
-| POST | `/api/eventos/` | Crear evento en agenda local |
-| DELETE | `/api/eventos/<id>/` | Eliminar evento local |
-| GET | `/api/actividad/` | Historial de cambios internos |
-| GET | `/api/csrf/` | Establecer cookie CSRF para escrituras |
+## Despliegue de Edge Functions y Secretos
 
-El cliente React ya gestiona las cookies CSRF. La API deliberadamente **no implementa autenticación**: eso debe agregarse **antes** de usar datos verdaderos o exponer la aplicación públicamente.
-
-## Cómo subir a GitHub
-
-1. Crea un repositorio **privado** vacío llamado `cemipre-plataforma` en GitHub, sin marcar “Add a README” (este proyecto ya tiene uno).
-2. Desde la carpeta descomprimida, ejecuta:
+Con Supabase CLI autenticado (`supabase login` y `supabase link --project-ref <REF>`):
 
 ```bash
-git init
-git add .
-git commit -m "MVP inicial CEMIPRE"
-git branch -M main
-git remote add origin https://github.com/TU-USUARIO/cemipre-plataforma.git
-git push -u origin main
+supabase secrets set \
+  GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}' \
+  GOOGLE_DRIVE_ROOT_FOLDER_ID='ID_CARPETA_RAIZ' \
+  AI_PROVIDER='gemini' \
+  AI_API_KEY='TU_CLAVE_AI' \
+  EMAIL_PROVIDER='resend' \
+  EMAIL_API_KEY='TU_CLAVE_RESEND' \
+  EMAIL_FROM='CEMIPRE <notificaciones@tudominio.cl>' \
+  CRON_SECRET='secreto-largo-aleatorio' \
+  APP_BASE_URL='https://tu-app.vercel.app'
+
+supabase functions deploy sync-drive
+supabase functions deploy resumen-usuario
+supabase functions deploy notificar-cambios
 ```
 
-Reemplaza `TU-USUARIO` por el usuario u organización propietarios del repositorio. Si Git solicita autenticación, sigue el flujo de acceso de GitHub; no uses contraseñas dentro del código.
+> [!WARNING]
+> **Pausa automática en Supabase Free Tier:** Si el proyecto permanece en el plan gratuito de Supabase, puede pausarse tras varios días consecutivos sin tráfico. El workflow `.github/workflows/notificar-cambios.yml` ayuda a generar actividad periódica y notificar ediciones, pero para operación continua institucional se recomienda evaluar el plan Pro o definir un monitoreo activo.
 
-3. En GitHub ve a **Settings → Collaborators and teams** (o **Collaborators**) y agrega a tus compañeros.
-4. Para que nadie sobrescriba el trabajo de otro, crea una rama por funcionalidad y usa *Pull Requests*. Revisa `CONTRIBUTING.md`.
-
-## Antes de un despliegue real
-
-1. Autenticación (OAuth o usuarios institucionales) y autorización por persona/bitácora.
-2. Confirmar permisos y titularidad de la cuenta y carpetas de Google Drive; evitar acceso indiscriminado a información sensible.
-3. Conectar y sincronizar Drive/Docs en el backend con consentimiento/autorización.
-4. Detector de cambios de documentos y **envío real** de notificaciones por correo, con control de duplicados.
-5. Resúmenes IA sobre documentos realmente autorizados: minimización de datos, consentimiento según corresponda, revisión humana, manejo de errores y trazabilidad.
-6. Calendario compartido real (si se aprueba) y permisos de edición.
-7. Gestión segura de secretos, TLS, backups, logs, monitoreo y despliegue.
-
-Ver el plan de integración en `docs/INTEGRACIONES.md` y el reparto sugerido en `TAREAS.md`.
+Consulta [docs/INTEGRACIONES.md](docs/INTEGRACIONES.md) para el paso a paso de Google Cloud y despliegue, y [docs/GUIA_USO_CEMIPRE.md](docs/GUIA_USO_CEMIPRE.md) para el manual de usuario final.

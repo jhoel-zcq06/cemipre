@@ -1,0 +1,27 @@
+name: Notificar cambios en Google Docs
+
+on:
+  schedule:
+    # Ejecución cada 10 minutos (útil en Supabase Free Tier si pg_cron está limitado)
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  notificar:
+    name: Consultar Google Drive Changes API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invocar Edge Function notificar-cambios
+        env:
+          SUPABASE_FUNCTIONS_URL: ${{ secrets.SUPABASE_FUNCTIONS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$SUPABASE_FUNCTIONS_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Secrets SUPABASE_FUNCTIONS_URL o CRON_SECRET no configurados; omitiendo ejecución."
+            exit 0
+          fi
+          curl --fail-with-body -sS -X POST \
+            "${SUPABASE_FUNCTIONS_URL%/}/notificar-cambios" \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            -d '{"origen":"github-actions"}'

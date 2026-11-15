@@ -5,24 +5,8 @@ on:
   pull_request:
 
 jobs:
-  backend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Instalar dependencias
-        run: python -m pip install -r requirements.txt
-      - name: Comprobar backend
-        run: python manage.py check
-      - name: Ejecutar pruebas
-        run: python manage.py test
-
   frontend:
+    name: Frontend (Tests y Compilación)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,7 +16,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
       - name: Instalar dependencias
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+      - name: Ejecutar pruebas unitarias
+        run: npm test
       - name: Compilar interfaz
         run: npm run build
+
+  edge-functions:
+    name: Verificar Edge Functions (Deno)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Verificar sintaxis y tipos de Edge Functions
+        run: deno check supabase/functions/**/*.ts
+
+  seguridad:
+    name: Verificar ausencia de secretos en el repositorio
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Buscar archivos de credenciales o .env locales
+        run: |
+          if git ls-files | grep -E '(^|/)\.env(\.local)?$|service-account.*\.json|credentials.*\.json'; then
+            echo "ERROR: Se detectaron archivos sensibles rastreados por Git."
+            exit 1
+          fi
