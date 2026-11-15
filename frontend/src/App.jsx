@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, isSupabaseConfigured } from './api.js';
 import { InicioView, ResumenesIAView, FavoritosView } from './components/DashboardViews.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
@@ -82,6 +82,8 @@ export default function App() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [reload, setReload] = useState(0);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   const isAdmin = perfil?.rol === 'admin';
   const isAuthorizedWorker = perfil?.rol === 'admin' || perfil?.rol === 'trabajador';
@@ -195,6 +197,11 @@ export default function App() {
     return () => { ignore = true; };
   }, [isAuthorizedWorker, peoplePage, search, onlyFavorites, favoriteIds, reload]);
 
+  // Limpiar resumen previo solo cuando cambia el usuario seleccionado o la sesión
+  useEffect(() => {
+    setSummary(null);
+  }, [isAuthorizedWorker, selectedId]);
+
   // Cargar detalle de persona seleccionada y sus comentarios internos
   useEffect(() => {
     if (!isAuthorizedWorker || selectedId === null) {
@@ -203,7 +210,6 @@ export default function App() {
       return;
     }
     let ignore = false;
-    setSummary(null);
     Promise.all([api.user(selectedId), api.listComments(selectedId)])
       .then(([personData, commentsData]) => {
         if (ignore) return;
@@ -436,10 +442,12 @@ export default function App() {
 
   async function handleGenerateSummary() {
     if (selectedId === null) return;
+    const targetId = selectedId;
     setError('');
     setSummaryLoading(true);
     try {
-      const res = await api.summary(selectedId);
+      const res = await api.summary(targetId);
+      if (selectedIdRef.current !== targetId) return;
       setSummary(res);
       setReload((n) => n + 1);
     } catch (err) {
