@@ -84,6 +84,7 @@ export default function App() {
   const [reload, setReload] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  const hasLoadedWorkspaceRef = useRef(false);
 
   const isAdmin = perfil?.rol === 'admin';
   const isAuthorizedWorker = perfil?.rol === 'admin' || perfil?.rol === 'trabajador';
@@ -165,12 +166,23 @@ export default function App() {
   }, [isAuthorizedWorker]);
 
   useEffect(() => {
-    if (!isAuthorizedWorker) return;
+    if (!isAuthorizedWorker) {
+      hasLoadedWorkspaceRef.current = false;
+      setBusy(false);
+      return;
+    }
     let ignore = false;
-    setBusy(true);
+    // Solo mostrar pantalla de carga inicial; los reload posteriores refrescan en segundo plano.
+    if (!hasLoadedWorkspaceRef.current) {
+      setBusy(true);
+    }
     loadWorkspaceBase()
       .catch((err) => { if (!ignore) setError(err.message); })
-      .finally(() => { if (!ignore) setBusy(false); });
+      .finally(() => {
+        if (ignore) return;
+        hasLoadedWorkspaceRef.current = true;
+        setBusy(false);
+      });
     return () => { ignore = true; };
   }, [isAuthorizedWorker, loadWorkspaceBase, reload]);
 

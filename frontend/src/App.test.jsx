@@ -81,17 +81,50 @@ describe('Flujo de resumen IA en App', () => {
     fireEvent.click(navUsers);
 
     const generateBtn = await screen.findByRole('button', { name: 'Generar resumen IA' });
+
+    let resolveBgStats;
+    api.getOverviewStats.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveBgStats = resolve; }),
+    );
+
     fireEvent.click(generateBtn);
 
     await waitFor(() => {
       expect(screen.getByText('Síntesis generada correctamente para persona 1.')).toBeInTheDocument();
     });
-    expect(api.user.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Incluso mientras el reload en segundo plano sigue pendiente, no debe mostrar la pantalla de carga
+    expect(screen.queryByText('Cargando plataforma CEMIPRE…')).not.toBeInTheDocument();
+
+    resolveBgStats({
+      totalPersonas: 2,
+      totalBitacoras: 1,
+      totalVinculadas: 1,
+      totalEventos: 0,
+    });
+    await waitFor(() => {
+      expect(api.user.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
     expect(screen.getByText('Avance de prueba')).toBeInTheDocument();
+    expect(screen.queryByText('Cargando plataforma CEMIPRE…')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Zelda/i }));
     await waitFor(() => {
       expect(screen.queryByText('Síntesis generada correctamente para persona 1.')).not.toBeInTheDocument();
     });
+  });
+
+  it('mantiene el resumen visible en Resúmenes IA sin parpadeo de carga', async () => {
+    render(<App />);
+
+    const navSummaries = await screen.findByRole('button', { name: 'Resúmenes IA' });
+    fireEvent.click(navSummaries);
+
+    const generateBtn = await screen.findByRole('button', { name: 'Generar resumen IA' });
+    fireEvent.click(generateBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText('Síntesis generada correctamente para persona 1.')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Cargando plataforma CEMIPRE…')).not.toBeInTheDocument();
   });
 });
