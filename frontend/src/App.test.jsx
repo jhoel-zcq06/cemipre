@@ -91,6 +91,7 @@ describe('Flujo de resumen IA en App', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Síntesis generada correctamente para persona 1.')).toBeInTheDocument();
+      expect(typeof resolveBgStats).toBe('function');
     });
     // Incluso mientras el reload en segundo plano sigue pendiente, no debe mostrar la pantalla de carga
     expect(screen.queryByText('Cargando plataforma CEMIPRE…')).not.toBeInTheDocument();
@@ -126,5 +127,46 @@ describe('Flujo de resumen IA en App', () => {
       expect(screen.getByText('Síntesis generada correctamente para persona 1.')).toBeInTheDocument();
     });
     expect(screen.queryByText('Cargando plataforma CEMIPRE…')).not.toBeInTheDocument();
+  });
+
+  it('refresca los avisos por correo al abrir la pestaña Avisos y al pulsar Actualizar', async () => {
+    render(<App />);
+
+    await screen.findByRole('button', { name: 'Avisos' });
+    await waitFor(() => {
+      expect(api.listNotifications.mock.calls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    const initialCalls = api.listNotifications.mock.calls.length;
+    api.listNotifications.mockResolvedValueOnce({
+      notificaciones: [
+        {
+          id: 99,
+          bitacora_id: 10,
+          persona_id: 1,
+          destinatario_email: 'admin@cemipre.cl',
+          estado: 'enviada',
+          detalle_error: '',
+          enviada_en: '2026-11-15T12:00:00Z',
+          bitacoras: { titulo: 'Rin-Bitacora-1' },
+          personas: { codigo: 'USR-001', nombre: 'Rin' },
+        },
+      ],
+      total: 1,
+      page: 1,
+      totalPages: 1,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Avisos' }));
+    await waitFor(() => {
+      expect(api.listNotifications.mock.calls.length).toBeGreaterThan(initialCalls);
+    });
+    expect(await screen.findByText(/USR-001 · Rin-Bitacora-1/)).toBeInTheDocument();
+
+    const beforeManualRefresh = api.listNotifications.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar' }));
+    await waitFor(() => {
+      expect(api.listNotifications.mock.calls.length).toBeGreaterThan(beforeManualRefresh);
+    });
   });
 });

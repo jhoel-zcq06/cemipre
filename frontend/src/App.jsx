@@ -85,6 +85,7 @@ export default function App() {
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const hasLoadedWorkspaceRef = useRef(false);
+  const notifReqRef = useRef(0);
 
   const isAdmin = perfil?.rol === 'admin';
   const isAuthorizedWorker = perfil?.rol === 'admin' || perfil?.rol === 'trabajador';
@@ -265,19 +266,33 @@ export default function App() {
     return () => { ignore = true; };
   }, [isAuthorizedWorker, activityPage, reload]);
 
-  // Cargar avisos por correo paginados
-  useEffect(() => {
-    if (!isAuthorizedWorker) return;
-    let ignore = false;
+  const loadNotifications = useCallback(() => {
+    if (!isAuthorizedWorker) {
+      notifReqRef.current++;
+      return;
+    }
+    const reqId = ++notifReqRef.current;
     api.listNotifications({ page: notifPage, pageSize: 20 })
       .then((res) => {
-        if (ignore) return;
+        if (notifReqRef.current !== reqId) return;
         setNotifications(res.notificaciones);
         setNotifMeta({ page: res.page, totalPages: res.totalPages, total: res.total });
       })
-      .catch((err) => { if (!ignore) setError(err.message); });
-    return () => { ignore = true; };
-  }, [isAuthorizedWorker, notifPage, reload]);
+      .catch((err) => {
+        if (notifReqRef.current === reqId) setError(err.message);
+      });
+  }, [isAuthorizedWorker, notifPage]);
+
+  // Cargar avisos por correo paginados y refrescar al entrar a la pestaña Avisos
+  useEffect(() => {
+    loadNotifications();
+  }, [loadNotifications, reload]);
+
+  useEffect(() => {
+    if (tab === 'avisos') {
+      loadNotifications();
+    }
+  }, [tab, loadNotifications]);
 
   // Cargar datos administrativos si es admin
   useEffect(() => {
@@ -325,6 +340,8 @@ export default function App() {
       setSaving(false);
     }
   }
+
+  const closeModal = useCallback(() => setModal(null), []);
 
   function openModal(type, data = {}) {
     setError('');
@@ -768,6 +785,7 @@ export default function App() {
                   notifMeta={notifMeta}
                   perfil={perfil}
                   onPageChange={setNotifPage}
+                  onRefresh={loadNotifications}
                   onOpenProfileSettings={() => openModal('profile-settings', perfil)}
                 />
               )}
@@ -808,7 +826,7 @@ export default function App() {
         saving={saving}
         error={error}
         onUpdateField={updateField}
-        onClose={() => setModal(null)}
+        onClose={closeModal}
         onSubmit={submitModal}
       />
     </div>

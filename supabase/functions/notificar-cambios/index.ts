@@ -54,6 +54,10 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function sendAlertEmail(params: {
   to: string[];
   subject: string;
@@ -87,26 +91,39 @@ async function sendAlertEmail(params: {
     return { ok: false, error: 'Falta configurar EMAIL_API_KEY (Resend) en secretos de Edge Functions.' };
   }
 
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from,
-      to: params.to,
-      subject: params.subject,
-      html: params.html,
-      text: params.text,
-    }),
-  });
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: params.to,
+        subject: params.subject,
+        html: params.html,
+        text: params.text,
+      }),
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      return { ok: true };
+    }
+
     const body = await res.text();
+    if (res.status === 429 && attempt < maxAttempts) {
+      const retryAfterSec = Number(res.headers.get('retry-after') || '0');
+      const waitMs = retryAfterSec > 0 && retryAfterSec <= 10 ? retryAfterSec * 1000 : 1200 * attempt;
+      await sleep(waitMs);
+      continue;
+    }
+
     return { ok: false, error: `Resend ${res.status}: ${body.slice(0, 180)}` };
   }
-  return { ok: true };
+
+  return { ok: false, error: 'Resend 429: límite temporal de envíos superado.' };
 }
 
 Deno.serve(async (req: Request) => {
@@ -136,6 +153,7 @@ Deno.serve(async (req: Request) => {
     const token = await getGoogleAccessToken();
     const debounceMinutes = Math.max(1, Number(Deno.env.get('NOTIFY_DEBOUNCE_MINUTES') || '15'));
     const appBaseUrl = (Deno.env.get('APP_BASE_URL') || 'https://cemipre-plataforma.vercel.app').replace(/\/$/, '');
+    const isResendProvider = (Deno.env.get('EMAIL_PROVIDER') || 'resend').trim().toLowerCase() !== 'webhook';
 
     const { data: syncState, error: syncErr } = await adminClient
       .from('drive_sync_state')
@@ -201,6 +219,7 @@ Deno.serve(async (req: Request) => {
     let notificacionesEnviadas = 0;
     let notificacionesOmitidas = 0;
     let erroresEnvio = 0;
+    let emailSendCount = 0;
 
     if (changedIds.length > 0) {
       const { data: matchedLogs } = await adminClient
@@ -312,8 +331,12 @@ Deno.serve(async (req: Request) => {
             </div>
           `;
 
-          // Enviar correo por lote (y registrar cada destinatario)
+          // Enviar correo por lote respetando el límite de frecuencia de Resend (2 req/s)
           for (const email of recipientEmails) {
+            if (emailSendCount > 0 && isResendProvider) {
+              await sleep(600);
+            }
+            emailSendCount++;
             const sendResult = await sendAlertEmail({
               to: [email],
               subject,

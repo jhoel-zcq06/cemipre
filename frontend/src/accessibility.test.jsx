@@ -1,7 +1,8 @@
 import '@testing-library/jest-dom/vitest';
+import { useState } from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
-import { Modal } from './components/Modals.jsx';
+import { AppModal, Modal } from './components/Modals.jsx';
 import { Notice } from './components/SharedUI.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
 
@@ -79,5 +80,42 @@ describe('Accesibilidad de UI (Modales y Avisos aria-live)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Cerrar sesión/i }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
     expect(onSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('AppModal mantiene el foco en Nombre o Carpeta Drive al escribir aunque onClose se recree', async () => {
+    function StatefulModalWrapper() {
+      const [form, setForm] = useState({ codigo: 'USER5', nombre: '', drive_folder_id: '' });
+      return (
+        <AppModal
+          modal="new-person"
+          form={form}
+          saving={false}
+          error=""
+          onUpdateField={(field, value) => setForm((prev) => ({ ...prev, [field]: value }))}
+          onClose={() => {}}
+          onSubmit={(e) => e.preventDefault()}
+        />
+      );
+    }
+
+    render(<StatefulModalWrapper />);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const codeInput = screen.getByLabelText('Código identificador');
+    const nameInput = screen.getByLabelText('Nombre o alias de referencia');
+    const driveInput = screen.getByLabelText('Carpeta en Google Drive (URL o ID, opcional)');
+    expect(document.activeElement).toBe(codeInput);
+
+    nameInput.focus();
+    expect(document.activeElement).toBe(nameInput);
+    fireEvent.change(nameInput, { target: { value: 'a' } });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(nameInput.value).toBe('a');
+    expect(document.activeElement).toBe(nameInput);
+
+    driveInput.focus();
+    fireEvent.change(driveInput, { target: { value: 'https://drive.google.com/drive/folders/1AbCdEfGhIjK' } });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(document.activeElement).toBe(driveInput);
   });
 });

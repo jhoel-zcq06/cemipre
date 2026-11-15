@@ -519,6 +519,7 @@ export function AvisosCorreoView({
   notifMeta,
   perfil,
   onPageChange,
+  onRefresh,
   onOpenProfileSettings,
 }) {
   return (
@@ -528,9 +529,16 @@ export function AvisosCorreoView({
           <h2>Avisos por correo electrónico</h2>
           <span className="count-pill">{notifMeta.total}</span>
         </div>
-        <button type="button" className="btn btn-secondary" onClick={onOpenProfileSettings}>
-          {perfil?.recibir_notificaciones ? '● Avisos activos en mi perfil' : '○ Avisos silenciados en mi perfil'}
-        </button>
+        <div className="detail-actions">
+          {onRefresh && (
+            <button type="button" className="btn btn-tiny" onClick={onRefresh}>
+              Actualizar
+            </button>
+          )}
+          <button type="button" className="btn btn-secondary" onClick={onOpenProfileSettings}>
+            {perfil?.recibir_notificaciones ? '● Avisos activos en mi perfil' : '○ Avisos silenciados en mi perfil'}
+          </button>
+        </div>
       </div>
 
       <Notice>

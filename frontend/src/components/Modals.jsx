@@ -17,6 +17,8 @@ const FOCUSABLE_SELECTOR = [
 export function Modal({ title, onClose, children }) {
   const dialogRef = useRef(null);
   const previousFocusRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement;
@@ -34,7 +36,7 @@ export function Modal({ title, onClose, children }) {
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current?.();
         return;
       }
       if (event.key === 'Tab' && container) {
@@ -63,7 +65,7 @@ export function Modal({ title, onClose, children }) {
         previousFocusRef.current.focus();
       }
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div
@@ -142,7 +144,7 @@ export function AppModal({
   const isDelete = modal.startsWith('delete-');
 
   return (
-    <Modal title={MODAL_TITLES[modal] || 'Formulario'} onClose={onClose}>
+    <Modal key={modal} title={MODAL_TITLES[modal] || 'Formulario'} onClose={onClose}>
       <form onSubmit={onSubmit} className="form-grid">
         {error && <Notice kind="error">{error}</Notice>}
 
