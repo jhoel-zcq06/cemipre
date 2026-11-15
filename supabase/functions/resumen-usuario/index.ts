@@ -138,20 +138,34 @@ async function callAiPrompt(prompt: string, systemPrompt: string): Promise<{ tex
     };
   }
 
-  const model = (Deno.env.get('AI_MODEL') || 'gemini-3.8-flash').trim();
+  const model = (Deno.env.get('AI_MODEL') || 'gemini-3.5-flash-lite').trim();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.2,
-        responseMimeType: 'application/json',
-      },
-    }),
-  });
+  const generationConfig: Record<string, unknown> = {
+    temperature: 0.2,
+    responseMimeType: 'application/json',
+  };
+  if (/^gemini-3([.-]|$)/i.test(model)) {
+    generationConfig.thinkingConfig = { thinkingLevel: 'low' };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(45_000),
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig,
+      }),
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new Error(`El modelo ${model} tardó demasiado en responder (timeout 45s). Prueba con AI_MODEL="gemini-3.5-flash-lite".`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Gemini respondió ${res.status}: ${errText.slice(0, 200)}`);

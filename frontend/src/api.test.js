@@ -74,7 +74,7 @@ describe('Mapeo de respuestas y manejo de errores', () => {
       nombre: 'Usuario 001',
       cantidad_bitacoras: 7,
       bitacoras_leidas: 5,
-      modelo: 'gemini/gemini-3.8-flash',
+      modelo: 'gemini/gemini-3.5-flash-lite',
       estado_general: 'Evolución estable.',
       avances_recientes: [{ punto: 'Participó en taller', fuente: 'Actividades', fecha: '2026-11-10' }],
     });
@@ -99,6 +99,22 @@ describe('Mapeo de respuestas y manejo de errores', () => {
       },
     };
     expect(await formatApiError(edgeErr)).toBe('Sin permiso en carpeta Drive');
+
+    const gatewayJsonErr = {
+      context: {
+        status: 401,
+        text: async () => JSON.stringify({ message: 'Invalid JWT' }),
+      },
+    };
+    expect(await formatApiError(gatewayJsonErr)).toBe('Invalid JWT');
+
+    const gatewayTimeoutErr = {
+      context: {
+        status: 504,
+        text: async () => 'upstream request timeout',
+      },
+    };
+    expect(await formatApiError(gatewayTimeoutErr)).toBe('HTTP 504: upstream request timeout');
   });
 
   it('detecta placeholders de ejemplo y exige URL y clave reales de Supabase', () => {

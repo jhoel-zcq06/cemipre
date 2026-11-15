@@ -138,12 +138,38 @@ export function mapActivityRow(row) {
   };
 }
 
+function extractContextMessage(rawText, status) {
+  const trimmed = (rawText || '').trim();
+  if (trimmed) {
+    try {
+      const body = JSON.parse(trimmed);
+      const detail = body?.error || body?.message || body?.msg;
+      if (detail) return String(detail);
+    } catch {
+      const prefix = status ? `HTTP ${status}: ` : '';
+      return `${prefix}${trimmed.slice(0, 220)}`;
+    }
+  }
+  return status ? `Error del servidor (HTTP ${status}).` : null;
+}
+
 export async function formatApiError(err, fallback = 'Ocurrió un error al comunicarse con Supabase.') {
   if (!err) return fallback;
-  if (err.context && typeof err.context.json === 'function') {
+  if (err.context && typeof err.context.text === 'function') {
+    try {
+      const rawText = typeof err.context.clone === 'function'
+        ? await err.context.clone().text()
+        : await err.context.text();
+      const parsed = extractContextMessage(rawText, err.context.status);
+      if (parsed) return parsed;
+    } catch {
+      // Continuar al fallback si no se pudo leer el cuerpo
+    }
+  } else if (err.context && typeof err.context.json === 'function') {
     try {
       const body = await err.context.json();
-      if (body?.error) return body.error;
+      const detail = body?.error || body?.message || body?.msg;
+      if (detail) return String(detail);
     } catch {
       // Continuar al mensaje general si no es JSON
     }
