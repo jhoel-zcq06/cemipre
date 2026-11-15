@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   extractGoogleDocId,
+  extractGoogleFolderId,
   validateDocsLink,
+  validateDriveFolderInput,
   validateEventDates,
   validateTextLength,
   mapSummaryResponse,
@@ -121,5 +123,26 @@ describe('Mapeo de respuestas y manejo de errores', () => {
     expect(hasRealSupabaseConfig('https://tu-proyecto.supabase.co', 'tu-clave-anon-publica-de-supabase')).toBe(false);
     expect(hasRealSupabaseConfig('', '')).toBe(false);
     expect(hasRealSupabaseConfig('https://abcd1234.supabase.co', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9')).toBe(true);
+  });
+});
+
+describe('Normalización de carpetas de Google Drive', () => {
+  it('extrae el ID limpio desde enlaces completos, rutas folders/ o IDs con ?usp=sharing', () => {
+    expect(extractGoogleFolderId('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO?usp=sharing')).toBe('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO');
+    expect(extractGoogleFolderId('folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO?usp=sharing')).toBe('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO');
+    expect(extractGoogleFolderId('https://drive.google.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO?usp=sharing')).toBe('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO');
+    expect(extractGoogleFolderId('https://drive.google.com/drive/u/1/folders/1rEm8_WIbYmWXyHLbMJBJAgej1oGZALus')).toBe('1rEm8_WIbYmWXyHLbMJBJAgej1oGZALus');
+    expect(extractGoogleFolderId('1rEm8_WIbYmWXyHLbMJBJAgej1oGZALus')).toBe('1rEm8_WIbYmWXyHLbMJBJAgej1oGZALus');
+  });
+
+  it('rechaza URLs de carpetas no seguras o externas y permite campo opcional vacío', () => {
+    expect(extractGoogleFolderId('http://drive.google.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO')).toBeNull();
+    expect(extractGoogleFolderId('https://evil.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO')).toBeNull();
+    expect(validateDriveFolderInput('')).toEqual({ valid: true, folderId: '' });
+    expect(validateDriveFolderInput('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO?usp=sharing')).toEqual({
+      valid: true,
+      folderId: '1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO',
+    });
+    expect(validateDriveFolderInput('https://evil.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO').valid).toBe(false);
   });
 });

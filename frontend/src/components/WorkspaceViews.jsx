@@ -609,10 +609,10 @@ export function CarpetasDriveView({
 
       <div className="sync-controls">
         <label className="sync-folder-input">
-          <span>ID de carpeta raíz en Drive (opcional si ya está en secretos de Supabase)</span>
+          <span>Carpeta raíz en Drive (URL o ID, opcional si ya está en secretos de Supabase)</span>
           <input
             type="text"
-            placeholder="Ej.: 1AbCdEfGhIjKlMnOpQrStUvWxYz"
+            placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
             value={rootFolderId}
             onChange={(e) => setRootFolderId(e.target.value)}
           />

@@ -47,6 +47,34 @@ function normalizeDocUrl(fileId: string, webViewLink?: string): string {
   return `https://docs.google.com/document/d/${fileId}/edit`;
 }
 
+const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,120}$/;
+
+function normalizeFolderId(raw: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.includes('://')) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:' || parsed.hostname !== 'drive.google.com') return '';
+      const pathMatch = parsed.pathname.match(/\/folders\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/);
+      if (pathMatch) return pathMatch[1];
+      if (parsed.pathname === '/open') {
+        const openId = (parsed.searchParams.get('id') || '').trim();
+        return DRIVE_ID_REGEX.test(openId) ? openId : '';
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+  const clean = trimmed
+    .replace(/^(?:\/?drive\/(?:u\/\d+\/)?)?\/?folders\//i, '')
+    .split(/[?#]/)[0]
+    .replace(/\/+$/, '')
+    .trim();
+  return DRIVE_ID_REGEX.test(clean) ? clean : '';
+}
+
 function parseFolderIdentity(folderName: string, folderId: string): { codigo: string; nombre: string } {
   const trimmed = folderName.trim();
   const match = trimmed.match(/^([A-Za-z]{2,10}-\d{1,6})(?:\s*[-–|:]\s*(.+))?$/);
@@ -152,7 +180,11 @@ Deno.serve(async (req: Request) => {
     }
 
     const token = await getGoogleAccessToken();
-    const rootFolderId = (body.root_folder_id || Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID') || '').trim();
+    const rawRootFolder = (body.root_folder_id || Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID') || '').trim();
+    const rootFolderId = rawRootFolder ? normalizeFolderId(rawRootFolder) : '';
+    if (rawRootFolder && !rootFolderId) {
+      return errorResponse('El ID o enlace de la carpeta raíz en Google Drive no es válido.');
+    }
     const syncTitles = body.sync_titles !== false;
     const crearFaltantes = body.crear_faltantes !== false;
 
@@ -195,10 +227,10 @@ Deno.serve(async (req: Request) => {
 
       for (const folder of driveFolders) {
         const parsed = parseFolderIdentity(folder.name, folder.id);
-        let matched = personas.find((p) => p.drive_folder_id === folder.id)
+        const matched = personas.find((p) => normalizeFolderId(p.drive_folder_id) === folder.id)
           || personas.find((p) => p.codigo.toUpperCase() === parsed.codigo.toUpperCase());
 
-        if (matched && !matched.drive_folder_id) {
+        if (matched && matched.drive_folder_id !== folder.id) {
           const { error: updErr } = await adminClient
             .from('personas')
             .update({ drive_folder_id: folder.id })
@@ -235,13 +267,18 @@ Deno.serve(async (req: Request) => {
     }
 
     // Paso 2: Sincronizar Docs dentro de cada carpeta de persona que tenga drive_folder_id
-    const personasConCarpeta = personas.filter((p) => p.drive_folder_id.trim() !== '');
+    const personasConCarpeta = personas
+      .map((p) => ({
+        persona: p,
+        folderId: normalizeFolderId(p.drive_folder_id) || p.drive_folder_id.trim(),
+      }))
+      .filter((entry) => entry.folderId !== '');
     const syncedDocIdsInStep2 = new Set<string>();
     report.personas_procesadas = personas.length;
 
-    for (const persona of personasConCarpeta) {
+    for (const { persona, folderId } of personasConCarpeta) {
       try {
-        const docsEnDrive = await collectDocsInPersonaFolder(persona.drive_folder_id, token);
+        const docsEnDrive = await collectDocsInPersonaFolder(folderId, token);
         const { data: existingLogs } = await adminClient
           .from('bitacoras')
           .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync')

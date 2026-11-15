@@ -77,6 +77,78 @@ export function validateDocsLink(value) {
   return { valid: true, googleDocId: docId, normalizedUrl: trimmed };
 }
 
+const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,120}$/;
+const DRIVE_FOLDER_PATH_REGEX = /\/folders\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/;
+
+/**
+ * Extrae el ID limpio de una carpeta de Google Drive aceptando URL completa,
+ * ruta parcial (`folders/<ID>?usp=sharing`), ID con parámetros o ID directo.
+ */
+export function extractGoogleFolderId(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 500) return null;
+
+  if (trimmed.includes('://')) {
+    let parsed;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return null;
+    }
+    if (
+      parsed.protocol !== 'https:'
+      || parsed.hostname !== 'drive.google.com'
+      || parsed.username !== ''
+      || parsed.password !== ''
+    ) {
+      return null;
+    }
+    const pathMatch = parsed.pathname.match(DRIVE_FOLDER_PATH_REGEX);
+    if (pathMatch) return pathMatch[1];
+    if (parsed.pathname === '/open') {
+      const openId = (parsed.searchParams.get('id') || '').trim();
+      return DRIVE_ID_REGEX.test(openId) ? openId : null;
+    }
+    return null;
+  }
+
+  const clean = trimmed
+    .replace(/^(?:\/?drive\/(?:u\/\d+\/)?)?\/?folders\//i, '')
+    .split(/[?#]/)[0]
+    .replace(/\/+$/, '')
+    .trim();
+  return DRIVE_ID_REGEX.test(clean) ? clean : null;
+}
+
+/**
+ * Valida y normaliza un ID o enlace de carpeta en Google Drive (opcional).
+ */
+export function validateDriveFolderInput(value) {
+  if (value === undefined || value === null || value === '') {
+    return { valid: true, folderId: '' };
+  }
+  if (typeof value !== 'string') {
+    return { valid: false, folderId: '', error: 'El identificador de carpeta debe ser texto.' };
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { valid: true, folderId: '' };
+  }
+  if (trimmed.length > 500) {
+    return { valid: false, folderId: '', error: 'El enlace de carpeta supera los 500 caracteres permitidos.' };
+  }
+  const folderId = extractGoogleFolderId(trimmed);
+  if (!folderId) {
+    return {
+      valid: false,
+      folderId: '',
+      error: 'Ingresa un ID de carpeta válido o un enlace https://drive.google.com/drive/folders/<ID>.',
+    };
+  }
+  return { valid: true, folderId };
+}
+
 /**
  * Valida que las fechas de un evento sean válidas y el fin sea posterior al inicio.
  */
@@ -421,13 +493,15 @@ export const api = {
     if (!checkCodigo.valid) throw new Error(checkCodigo.error);
     const checkNombre = validateTextLength(nombre, 120, 'El nombre');
     if (!checkNombre.valid) throw new Error(checkNombre.error);
+    const checkFolder = validateDriveFolderInput(drive_folder_id);
+    if (!checkFolder.valid) throw new Error(checkFolder.error);
 
     const { data, error } = await client
       .from('personas')
       .insert({
         codigo: checkCodigo.value.toUpperCase(),
         nombre: checkNombre.value,
-        drive_folder_id: (drive_folder_id || '').trim(),
+        drive_folder_id: checkFolder.folderId,
       })
       .select('id, codigo, nombre, drive_folder_id')
       .single();
@@ -445,13 +519,15 @@ export const api = {
     if (!checkCodigo.valid) throw new Error(checkCodigo.error);
     const checkNombre = validateTextLength(nombre, 120, 'El nombre');
     if (!checkNombre.valid) throw new Error(checkNombre.error);
+    const checkFolder = validateDriveFolderInput(drive_folder_id);
+    if (!checkFolder.valid) throw new Error(checkFolder.error);
 
     const { data, error } = await client
       .from('personas')
       .update({
         codigo: checkCodigo.value.toUpperCase(),
         nombre: checkNombre.value,
-        drive_folder_id: (drive_folder_id || '').trim(),
+        drive_folder_id: checkFolder.folderId,
       })
       .eq('id', id)
       .select('id, codigo, nombre, drive_folder_id')
@@ -760,8 +836,14 @@ export const api = {
 
   async syncDrive(payload = {}) {
     const client = requireClient();
+    const nextPayload = { ...payload };
+    if (nextPayload.root_folder_id) {
+      const checkFolder = validateDriveFolderInput(nextPayload.root_folder_id);
+      if (!checkFolder.valid) throw new Error(checkFolder.error);
+      nextPayload.root_folder_id = checkFolder.folderId;
+    }
     const { data, error } = await client.functions.invoke('sync-drive', {
-      body: payload,
+      body: nextPayload,
     });
     if (error) throw new Error(await formatApiError(error, 'Error al sincronizar con Google Drive.'));
     return data;

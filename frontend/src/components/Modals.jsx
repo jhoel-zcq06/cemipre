@@ -170,10 +170,10 @@ export function AppModal({
               />
             </label>
             <label>
-              ID de carpeta en Google Drive (opcional)
+              Carpeta en Google Drive (URL o ID, opcional)
               <input
-                maxLength={160}
-                placeholder="Ej.: 1AbCdEfGhIjKlMnOpQrStUvWxYz"
+                maxLength={500}
+                placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
                 value={form.drive_folder_id || ''}
                 onChange={(e) => onUpdateField('drive_folder_id', e.target.value)}
               />
