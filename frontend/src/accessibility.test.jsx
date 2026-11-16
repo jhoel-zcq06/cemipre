@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import { AppModal, Modal } from './components/Modals.jsx';
-import { CarpetasDriveView } from './components/WorkspaceViews.jsx';
+import { CarpetasDriveView, AdministracionView } from './components/WorkspaceViews.jsx';
 import { Notice } from './components/SharedUI.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
 
@@ -158,5 +158,53 @@ describe('Accesibilidad de UI (Modales y Avisos aria-live)', () => {
     expect(onOpenModal).toHaveBeenCalledWith('new-person', {
       drive_folder_id: '1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO',
     });
+  });
+
+  it('AdministracionView oculta controles para degradar o crear admins a administradores secundarios', () => {
+    const sampleProfiles = [
+      { id: 'u-main', email: 'principal@cemipre.cl', nombre: 'Principal', rol: 'admin', recibir_notificaciones: true },
+      { id: 'u-sec', email: 'secundario@cemipre.cl', nombre: 'Secundario', rol: 'admin', recibir_notificaciones: true },
+      { id: 'u-work', email: 'trabajador@cemipre.cl', nombre: 'Trabajador', rol: 'trabajador', recibir_notificaciones: true },
+    ];
+    const onChangeRole = vi.fn();
+
+    const { rerender } = render(
+      <AdministracionView
+        profiles={sampleProfiles}
+        whitelist={[{ email: 'vip@cemipre.cl', rol: 'admin' }]}
+        currentUserId="u-sec"
+        canManageAdmins={false}
+        onChangeRole={onChangeRole}
+        onAddWhitelist={() => Promise.resolve(true)}
+        onRemoveWhitelist={() => {}}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Rol para principal@cemipre.cl')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Rol para secundario@cemipre.cl')).not.toBeInTheDocument();
+    const workerSelect = screen.getByLabelText('Rol para trabajador@cemipre.cl');
+    expect(Array.from(workerSelect.options).map((o) => o.value)).toEqual(['pendiente', 'trabajador']);
+    const whitelistSelect = screen.getByLabelText('Rol asignado');
+    expect(Array.from(whitelistSelect.options).map((o) => o.value)).toEqual(['trabajador']);
+    expect(screen.queryByRole('button', { name: 'Quitar' })).not.toBeInTheDocument();
+
+    rerender(
+      <AdministracionView
+        profiles={sampleProfiles}
+        whitelist={[{ email: 'vip@cemipre.cl', rol: 'admin' }]}
+        currentUserId="u-main"
+        canManageAdmins={true}
+        onChangeRole={onChangeRole}
+        onAddWhitelist={() => Promise.resolve(true)}
+        onRemoveWhitelist={() => {}}
+      />,
+    );
+
+    expect(screen.queryByLabelText('Rol para principal@cemipre.cl')).not.toBeInTheDocument();
+    const secondaryAdminSelect = screen.getByLabelText('Rol para secundario@cemipre.cl');
+    expect(Array.from(secondaryAdminSelect.options).map((o) => o.value)).toEqual(['pendiente', 'trabajador', 'admin']);
+    fireEvent.change(secondaryAdminSelect, { target: { value: 'trabajador' } });
+    expect(onChangeRole).toHaveBeenCalledWith('u-sec', 'trabajador');
+    expect(screen.getByRole('button', { name: 'Quitar' })).toBeInTheDocument();
   });
 });

@@ -777,6 +777,7 @@ export function AdministracionView({
   profiles,
   whitelist,
   currentUserId,
+  canManageAdmins = false,
   onChangeRole,
   onAddWhitelist,
   onRemoveWhitelist,
@@ -789,7 +790,8 @@ export function AdministracionView({
     event.preventDefault();
     if (!newEmail.trim()) return;
     setBusy(true);
-    const ok = await onAddWhitelist({ email: newEmail.trim(), rol: newRole });
+    const effectiveRole = canManageAdmins ? newRole : 'trabajador';
+    const ok = await onAddWhitelist({ email: newEmail.trim(), rol: effectiveRole });
     if (ok) setNewEmail('');
     setBusy(false);
   }
@@ -807,33 +809,43 @@ export function AdministracionView({
         </Notice>
 
         <div className="logs-list">
-          {profiles.map((prof) => (
-            <article key={prof.id} className="log-row">
-              <span className="doc-icon" aria-hidden="true">◎</span>
-              <div className="log-body">
-                <strong>{prof.nombre || prof.email}</strong>
-                <small>
-                  {prof.email} · Notificaciones: {prof.recibir_notificaciones ? 'Activas' : 'Silenciadas'}
-                </small>
-              </div>
-              <div className="log-actions">
-                <label className="sr-only" htmlFor={`rol-${prof.id}`}>
-                  Rol para {prof.email}
-                </label>
-                <select
-                  id={`rol-${prof.id}`}
-                  className="role-select"
-                  value={prof.rol}
-                  disabled={prof.id === currentUserId}
-                  onChange={(e) => onChangeRole(prof.id, e.target.value)}
-                >
-                  <option value="pendiente">pendiente</option>
-                  <option value="trabajador">trabajador</option>
-                  <option value="admin">admin</option>
-                </select>
-              </div>
-            </article>
-          ))}
+          {profiles.map((prof) => {
+            const isSelf = prof.id === currentUserId;
+            const isLockedAdmin = prof.rol === 'admin' && (isSelf || !canManageAdmins);
+            return (
+              <article key={prof.id} className="log-row">
+                <span className="doc-icon" aria-hidden="true">◎</span>
+                <div className="log-body">
+                  <strong>{prof.nombre || prof.email}</strong>
+                  <small>
+                    {prof.email} · Notificaciones: {prof.recibir_notificaciones ? 'Activas' : 'Silenciadas'}
+                  </small>
+                </div>
+                <div className="log-actions">
+                  {isLockedAdmin ? (
+                    <span className="status-badge badge-muted">admin</span>
+                  ) : (
+                    <>
+                      <label className="sr-only" htmlFor={`rol-${prof.id}`}>
+                        Rol para {prof.email}
+                      </label>
+                      <select
+                        id={`rol-${prof.id}`}
+                        className="role-select"
+                        value={prof.rol}
+                        disabled={isSelf}
+                        onChange={(e) => onChangeRole(prof.id, e.target.value)}
+                      >
+                        <option value="pendiente">pendiente</option>
+                        <option value="trabajador">trabajador</option>
+                        {canManageAdmins && <option value="admin">admin</option>}
+                      </select>
+                    </>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
 
@@ -854,9 +866,13 @@ export function AdministracionView({
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
           />
-          <select value={newRole} onChange={(e) => setNewRole(e.target.value)} aria-label="Rol asignado">
+          <select
+            value={canManageAdmins ? newRole : 'trabajador'}
+            onChange={(e) => setNewRole(e.target.value)}
+            aria-label="Rol asignado"
+          >
             <option value="trabajador">trabajador</option>
-            <option value="admin">admin</option>
+            {canManageAdmins && <option value="admin">admin</option>}
           </select>
           <button type="submit" className="btn btn-primary" disabled={busy}>
             Agregar a lista blanca
@@ -871,13 +887,17 @@ export function AdministracionView({
                   <strong>{item.email}</strong>
                   <small>Rol automático: {item.rol}</small>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-tiny btn-danger-outline"
-                  onClick={() => onRemoveWhitelist(item.email)}
-                >
-                  Quitar
-                </button>
+                {item.rol === 'admin' && !canManageAdmins ? (
+                  <span className="status-badge badge-muted">admin</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-tiny btn-danger-outline"
+                    onClick={() => onRemoveWhitelist(item.email)}
+                  >
+                    Quitar
+                  </button>
+                )}
               </article>
             ))}
           </div>

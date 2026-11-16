@@ -414,6 +414,13 @@ export const api = {
     return data ?? [];
   },
 
+  async canManageAdmins() {
+    const client = requireClient();
+    const { data, error } = await client.rpc('es_superadmin_actual');
+    if (error) return false;
+    return Boolean(data);
+  },
+
   async updateProfileRole(profileId, rol) {
     const client = requireClient();
     const { data, error } = await client

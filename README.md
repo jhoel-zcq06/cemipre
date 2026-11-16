@@ -100,6 +100,7 @@ npm run build    # Compila la versión de producción en frontend/dist/
    - `supabase/migrations/0003_drive_sync_y_notificaciones.sql`
    - `supabase/migrations/0004_cron_notificaciones.sql`
    - `supabase/migrations/0005_ux_favoritos_y_comentarios.sql`
+   - `supabase/migrations/0006_jerarquia_admin_secreta.sql`
    - *(Opcional solo en entorno de pruebas)* `supabase/seed.sql`
 2. En **Authentication → Providers**, activa **Email** y, si el equipo lo requiere, **Google** (configurando Redirect URL hacia tu dominio / `http://127.0.0.1:5173`).
 3. Registra la primera cuenta de administrador en la app y promuévela una sola vez desde SQL Editor:

@@ -50,6 +50,7 @@ vi.mock('./api.js', async (importOriginal) => {
       listNotifications: vi.fn(async () => ({ notificaciones: [], total: 0, page: 1, totalPages: 1 })),
       listProfiles: vi.fn(async () => []),
       listWhitelist: vi.fn(async () => []),
+      canManageAdmins: vi.fn(async () => false),
       createLog: vi.fn(async ({ persona_id, titulo, url_docs }) => ({
         id: 21,
         persona_id,

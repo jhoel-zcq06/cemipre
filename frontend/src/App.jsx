@@ -71,6 +71,7 @@ export default function App() {
   const [syncBusy, setSyncBusy] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [whitelist, setWhitelist] = useState([]);
+  const [canManageAdmins, setCanManageAdmins] = useState(false);
 
   // Resumen IA, Modales y Feedback
   const [summary, setSummary] = useState(null);
@@ -296,13 +297,21 @@ export default function App() {
 
   // Cargar datos administrativos si es admin
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isAdmin) {
+      setCanManageAdmins(false);
+      return;
+    }
     let ignore = false;
-    Promise.all([api.listProfiles(), api.listWhitelist()])
-      .then(([profData, wlData]) => {
+    Promise.all([
+      api.listProfiles(),
+      api.listWhitelist(),
+      api.canManageAdmins ? api.canManageAdmins() : Promise.resolve(false),
+    ])
+      .then(([profData, wlData, superFlag]) => {
         if (ignore) return;
         setProfiles(profData);
         setWhitelist(wlData);
+        setCanManageAdmins(Boolean(superFlag));
       })
       .catch((err) => { if (!ignore) setError(err.message); });
     return () => { ignore = true; };
@@ -817,6 +826,7 @@ export default function App() {
                   profiles={profiles}
                   whitelist={whitelist}
                   currentUserId={perfil.id}
+                  canManageAdmins={canManageAdmins}
                   onChangeRole={handleChangeRole}
                   onAddWhitelist={handleAddWhitelist}
                   onRemoveWhitelist={handleRemoveWhitelist}
