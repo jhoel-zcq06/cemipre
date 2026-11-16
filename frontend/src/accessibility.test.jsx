@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import { AppModal, Modal } from './components/Modals.jsx';
+import { CarpetasDriveView } from './components/WorkspaceViews.jsx';
 import { Notice } from './components/SharedUI.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
 
@@ -117,5 +118,44 @@ describe('Accesibilidad de UI (Modales y Avisos aria-live)', () => {
     fireEvent.change(driveInput, { target: { value: 'https://drive.google.com/drive/folders/1AbCdEfGhIjK' } });
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(document.activeElement).toBe(driveInput);
+    expect(screen.getByText(/ID detectado para usuario/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dejar solo ID' }));
+    expect(driveInput.value).toBe('1AbCdEfGhIjK');
+  });
+
+  it('CarpetasDriveView extrae el ID limpio de un enlace de Drive y permite abrir nuevo usuario con él', async () => {
+    const onOpenModal = vi.fn();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(
+      <CarpetasDriveView
+        syncState={null}
+        syncResult={null}
+        syncBusy={false}
+        people={[]}
+        onSyncDrive={() => {}}
+        onOpenUser={() => {}}
+        onOpenModal={onOpenModal}
+      />,
+    );
+
+    const extractor = screen.getByLabelText(/Extractor rápido de ID de Google Drive/i);
+    fireEvent.change(extractor, {
+      target: { value: 'https://drive.google.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO?usp=sharing' },
+    });
+
+    expect(screen.getByText('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Copiar ID' }));
+    expect(writeText).toHaveBeenCalledWith('1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Crear usuario con este ID' }));
+    expect(onOpenModal).toHaveBeenCalledWith('new-person', {
+      drive_folder_id: '1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO',
+    });
   });
 });

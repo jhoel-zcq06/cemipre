@@ -7,6 +7,9 @@ import {
   getStartPageToken,
   GoogleApiError,
   listFolderChildren,
+  normalizeDocUrl,
+  normalizeFolderId,
+  parseFolderIdentity,
 } from '../_shared/google.ts';
 import { AuthError, requireAuthorizedWorker } from '../_shared/supabase.ts';
 
@@ -38,56 +41,6 @@ interface BitacoraRow {
   drive_modified_time: string | null;
   drive_revision_id: string;
   estado_sync: string;
-}
-
-function normalizeDocUrl(fileId: string, webViewLink?: string): string {
-  if (webViewLink && webViewLink.startsWith('https://docs.google.com/document/d/')) {
-    return webViewLink;
-  }
-  return `https://docs.google.com/document/d/${fileId}/edit`;
-}
-
-const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,120}$/;
-
-function normalizeFolderId(raw: string): string {
-  const trimmed = (raw || '').trim();
-  if (!trimmed) return '';
-  if (trimmed.includes('://')) {
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.protocol !== 'https:' || parsed.hostname !== 'drive.google.com') return '';
-      const pathMatch = parsed.pathname.match(/\/folders\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/);
-      if (pathMatch) return pathMatch[1];
-      if (parsed.pathname === '/open') {
-        const openId = (parsed.searchParams.get('id') || '').trim();
-        return DRIVE_ID_REGEX.test(openId) ? openId : '';
-      }
-      return '';
-    } catch {
-      return '';
-    }
-  }
-  const clean = trimmed
-    .replace(/^(?:\/?drive\/(?:u\/\d+\/)?)?\/?folders\//i, '')
-    .split(/[?#]/)[0]
-    .replace(/\/+$/, '')
-    .trim();
-  return DRIVE_ID_REGEX.test(clean) ? clean : '';
-}
-
-function parseFolderIdentity(folderName: string, folderId: string): { codigo: string; nombre: string } {
-  const trimmed = folderName.trim();
-  const match = trimmed.match(/^([A-Za-z]{2,10}-\d{1,6})(?:\s*[-–|:]\s*(.+))?$/);
-  if (match) {
-    return {
-      codigo: match[1].toUpperCase(),
-      nombre: (match[2] || match[1]).trim().slice(0, 120),
-    };
-  }
-  return {
-    codigo: `DRV-${folderId.slice(0, 6).toUpperCase()}`,
-    nombre: trimmed.slice(0, 120) || 'Usuario Drive',
-  };
 }
 
 function resolveDocTarget(item: DriveFileMeta): { id: string; name: string; webViewLink?: string; modifiedTime?: string; headRevisionId?: string } | null {

@@ -3,12 +3,62 @@
  * Firma JWT RS256 con Web Crypto API nativa (sin dependencias externas pesadas).
  */
 
-const GOOGLE_SCOPES = [
+export const GOOGLE_READONLY_SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/documents.readonly',
 ].join(' ');
+export const GOOGLE_WRITE_SCOPES = 'https://www.googleapis.com/auth/drive';
 
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
+const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,120}$/;
+
+export function normalizeDocUrl(fileId: string, webViewLink?: string): string {
+  if (webViewLink && webViewLink.startsWith('https://docs.google.com/document/d/')) {
+    return webViewLink;
+  }
+  return `https://docs.google.com/document/d/${fileId}/edit`;
+}
+
+export function normalizeFolderId(raw: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.includes('://')) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:' || parsed.hostname !== 'drive.google.com') return '';
+      const pathMatch = parsed.pathname.match(/\/folders\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/);
+      if (pathMatch) return pathMatch[1];
+      if (parsed.pathname === '/open') {
+        const openId = (parsed.searchParams.get('id') || '').trim();
+        return DRIVE_ID_REGEX.test(openId) ? openId : '';
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+  const clean = trimmed
+    .replace(/^(?:\/?drive\/(?:u\/\d+\/)?)?\/?folders\//i, '')
+    .split(/[?#]/)[0]
+    .replace(/\/+$/, '')
+    .trim();
+  return DRIVE_ID_REGEX.test(clean) ? clean : '';
+}
+
+export function parseFolderIdentity(folderName: string, folderId: string): { codigo: string; nombre: string } {
+  const trimmed = folderName.trim();
+  const match = trimmed.match(/^([A-Za-z]{2,10}-\d{1,6})(?:\s*[-–|:]\s*(.+))?$/);
+  if (match) {
+    return {
+      codigo: match[1].toUpperCase(),
+      nombre: (match[2] || match[1]).trim().slice(0, 120),
+    };
+  }
+  return {
+    codigo: `DRV-${folderId.slice(0, 6).toUpperCase()}`,
+    nombre: trimmed.slice(0, 120) || 'Usuario Drive',
+  };
+}
 
 export type DriveErrorCode = 'sin_permiso' | 'no_encontrada' | 'configuracion' | 'error_api';
 
@@ -50,7 +100,7 @@ export interface DriveChangeItem {
   file?: DriveFileMeta;
 }
 
-let cachedToken: { token: string; expiresAt: number } | null = null;
+const cachedTokens = new Map<string, { token: string; expiresAt: number }>();
 
 function toBase64Url(input: Uint8Array | string): string {
   const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
@@ -110,14 +160,14 @@ export function loadServiceAccountCredentials(): ServiceAccountCredentials {
   );
 }
 
-async function createSignedJwt(creds: ServiceAccountCredentials): Promise<string> {
+async function createSignedJwt(creds: ServiceAccountCredentials, scopes: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const tokenUri = creds.token_uri || DEFAULT_TOKEN_URI;
 
   const header = toBase64Url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const payload = toBase64Url(JSON.stringify({
     iss: creds.client_email,
-    scope: GOOGLE_SCOPES,
+    scope: scopes,
     aud: tokenUri,
     iat: now,
     exp: now + 3600,
@@ -141,14 +191,15 @@ async function createSignedJwt(creds: ServiceAccountCredentials): Promise<string
   return `${signingInput}.${toBase64Url(new Uint8Array(signature))}`;
 }
 
-export async function getGoogleAccessToken(): Promise<string> {
+export async function getGoogleAccessToken(scopes = GOOGLE_READONLY_SCOPES): Promise<string> {
   const now = Date.now();
-  if (cachedToken && cachedToken.expiresAt - 60_000 > now) {
-    return cachedToken.token;
+  const cached = cachedTokens.get(scopes);
+  if (cached && cached.expiresAt - 60_000 > now) {
+    return cached.token;
   }
 
   const creds = loadServiceAccountCredentials();
-  const assertion = await createSignedJwt(creds);
+  const assertion = await createSignedJwt(creds, scopes);
   const tokenUri = creds.token_uri || DEFAULT_TOKEN_URI;
 
   const response = await fetch(tokenUri, {
@@ -170,11 +221,11 @@ export async function getGoogleAccessToken(): Promise<string> {
   }
 
   const data = await response.json() as { access_token: string; expires_in?: number };
-  cachedToken = {
+  cachedTokens.set(scopes, {
     token: data.access_token,
     expiresAt: now + (data.expires_in ?? 3600) * 1000,
-  };
-  return cachedToken.token;
+  });
+  return data.access_token;
 }
 
 function classifyGoogleHttpError(status: number, context: string): GoogleApiError {
@@ -366,4 +417,40 @@ export async function listDriveChanges(
   }
 
   return { changes: allChanges, newStartPageToken };
+}
+
+export async function createDriveItem(params: {
+  name: string;
+  mimeType: string;
+  parentId: string;
+  token: string;
+}): Promise<DriveFileMeta> {
+  const fields = 'id,name,mimeType,webViewLink,modifiedTime,headRevisionId,parents';
+  const url = `https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=${encodeURIComponent(fields)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${params.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: params.name,
+      mimeType: params.mimeType,
+      parents: [params.parentId],
+    }),
+  });
+
+  if (!response.ok) {
+    const bodyText = await response.text();
+    if (response.status === 403 && bodyText.includes('storageQuotaExceeded')) {
+      throw new GoogleApiError(
+        'La Service Account no puede crear archivos en una cuenta @gmail.com personal ("Mi unidad"). Configura GOOGLE_DRIVE_WEBHOOK_URL con el puente de Google Apps Script o usa una Unidad Compartida de Google Workspace.',
+        403,
+        'configuracion',
+      );
+    }
+    throw classifyGoogleHttpError(response.status, `${params.parentId} (${bodyText.slice(0, 120)})`);
+  }
+
+  return await response.json() as DriveFileMeta;
 }

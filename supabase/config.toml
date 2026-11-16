@@ -24,3 +24,6 @@ verify_jwt = false
 
 [functions.notificar-cambios]
 verify_jwt = false
+
+[functions.crear-bitacora-drive]
+verify_jwt = false

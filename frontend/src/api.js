@@ -21,7 +21,7 @@ export const supabase = isSupabaseConfigured
     })
   : null;
 
-const DOC_PATH_REGEX = /^\/document\/d\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/;
+const DOC_PATH_REGEX = /^\/document\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/;
 
 /**
  * Extrae el ID estable de un enlace válido de Google Docs.
@@ -147,6 +147,54 @@ export function validateDriveFolderInput(value) {
     };
   }
   return { valid: true, folderId };
+}
+
+/**
+ * Extrae el ID limpio de un enlace de Google Drive (carpeta de usuario) o Google Docs.
+ */
+export function extractDriveResourceInfo(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return { valid: true, kind: null, id: '', label: '' };
+  }
+  const trimmed = value.trim();
+  if (trimmed.length > 500) {
+    return {
+      valid: false,
+      kind: null,
+      id: '',
+      label: '',
+      error: 'El enlace supera los 500 caracteres permitidos.',
+    };
+  }
+
+  const docId = extractGoogleDocId(trimmed);
+  if (docId) {
+    return {
+      valid: true,
+      kind: 'doc',
+      id: docId,
+      label: 'Documento Google Docs',
+    };
+  }
+
+  const folderId = extractGoogleFolderId(trimmed);
+  if (folderId) {
+    const looksLikeFolderLink = trimmed.includes('://') || /folders\//i.test(trimmed) || /[?#]/.test(trimmed);
+    return {
+      valid: true,
+      kind: looksLikeFolderLink ? 'folder' : 'id',
+      id: folderId,
+      label: looksLikeFolderLink ? 'Carpeta de usuario (Drive)' : 'ID válido de Google Drive',
+    };
+  }
+
+  return {
+    valid: false,
+    kind: null,
+    id: '',
+    label: '',
+    error: 'Enlace o ID no reconocido. Pega https://drive.google.com/drive/folders/... o https://docs.google.com/document/d/...',
+  };
 }
 
 /**
@@ -619,6 +667,22 @@ export const api = {
       bitacoraId: data.id,
       actor,
     });
+    return data;
+  },
+
+  async createLogWithDrive({ persona_id, titulo }) {
+    const client = requireClient();
+    const checkTitulo = validateTextLength(titulo, 160, 'El nombre de la bitácora');
+    if (!checkTitulo.valid) throw new Error(checkTitulo.error);
+    const { data, error } = await client.functions.invoke('crear-bitacora-drive', {
+      body: {
+        persona_id,
+        titulo: checkTitulo.value,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo crear la carpeta y el Google Doc en Drive.'));
+    }
     return data;
   },
 

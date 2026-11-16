@@ -131,6 +131,7 @@ supabase secrets set \
 supabase functions deploy sync-drive
 supabase functions deploy resumen-usuario
 supabase functions deploy notificar-cambios
+supabase functions deploy crear-bitacora-drive
 ```
 
 > [!WARNING]

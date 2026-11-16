@@ -397,14 +397,30 @@ export default function App() {
     if (modal === 'new-log') {
       const targetPersonaId = form.persona_id || selectedId;
       if (!targetPersonaId) return;
-      await runMutation(
-        () => api.createLog({
-          persona_id: targetPersonaId,
-          titulo: form.titulo || '',
-          url_docs: form.url_docs || '',
-        }, actor),
-        'Bitácora agregada.',
-      );
+      const manualUrl = (form.url_docs || '').trim();
+      const shouldCreateInDrive = !manualUrl && form.crear_en_drive !== false;
+
+      if (shouldCreateInDrive) {
+        const res = await runMutation(
+          () => api.createLogWithDrive({
+            persona_id: targetPersonaId,
+            titulo: form.titulo || '',
+          }),
+          'Carpeta y Google Doc creados en Drive y sincronizados con el usuario.',
+        );
+        if (res?.warning) {
+          setMessage(res.warning);
+        }
+      } else {
+        await runMutation(
+          () => api.createLog({
+            persona_id: targetPersonaId,
+            titulo: form.titulo || '',
+            url_docs: manualUrl,
+          }, actor),
+          'Bitácora agregada.',
+        );
+      }
     }
 
     if (modal === 'edit-log') {
@@ -798,6 +814,7 @@ export default function App() {
                   people={people}
                   onSyncDrive={handleSyncDrive}
                   onOpenUser={openUserInWorkspace}
+                  onOpenModal={openModal}
                 />
               )}
 

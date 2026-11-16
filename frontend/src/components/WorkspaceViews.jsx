@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { extractDriveResourceInfo } from '../api.js';
 import {
   Notice,
   Pagination,
@@ -155,7 +156,7 @@ export function UsuariosView({
                 <button
                   className="btn btn-secondary"
                   type="button"
-                  onClick={() => onOpenModal('new-log', { persona_id: person.id })}
+                  onClick={() => onOpenModal('new-log', { persona_id: person.id, crear_en_drive: true })}
                 >
                   + Agregar bitácora
                 </button>
@@ -590,8 +591,24 @@ export function CarpetasDriveView({
   people,
   onSyncDrive,
   onOpenUser,
+  onOpenModal,
 }) {
   const [rootFolderId, setRootFolderId] = useState('');
+  const [extractorInput, setExtractorInput] = useState('');
+  const [copiedId, setCopiedId] = useState(false);
+
+  const extractedInfo = extractDriveResourceInfo(extractorInput);
+
+  async function handleCopyId() {
+    if (!extractedInfo.id) return;
+    try {
+      await navigator.clipboard?.writeText(extractedInfo.id);
+      setCopiedId(true);
+      window.setTimeout(() => setCopiedId(false), 2000);
+    } catch {
+      setCopiedId(false);
+    }
+  }
 
   return (
     <section className="panel wide-panel" aria-label="Sincronización de carpetas Google Drive">
@@ -614,6 +631,61 @@ export function CarpetasDriveView({
         Conecta la carpeta raíz compartida con la <strong>Service Account</strong> de CEMIPRE para detectar
         carpetas de usuarios, nuevos Google Docs, renombres y posibles archivos sin permiso de lectura.
       </Notice>
+
+      <div className="id-extractor-box">
+        <label className="sync-folder-input" htmlFor="drive-id-extractor-input">
+          <span>Extractor rápido de ID de Google Drive (pega un enlace y obtén el ID para usuario)</span>
+          <input
+            id="drive-id-extractor-input"
+            type="text"
+            placeholder="https://drive.google.com/drive/folders/... o enlace de Google Docs"
+            value={extractorInput}
+            onChange={(e) => {
+              setExtractorInput(e.target.value);
+              setCopiedId(false);
+            }}
+          />
+        </label>
+
+        {extractorInput.trim() !== '' && (
+          extractedInfo.valid && extractedInfo.id ? (
+            <div className="id-extractor-result" aria-live="polite">
+              <div className="id-extractor-meta">
+                <span className="status-badge badge-ok">{extractedInfo.label}</span>
+                <code className="extracted-id-code">{extractedInfo.id}</code>
+              </div>
+              <div className="detail-actions">
+                <button type="button" className="btn btn-tiny btn-primary" onClick={handleCopyId}>
+                  {copiedId ? 'Copiado ✓' : 'Copiar ID'}
+                </button>
+                {extractedInfo.kind !== 'doc' && onOpenModal && (
+                  <button
+                    type="button"
+                    className="btn btn-tiny btn-secondary"
+                    onClick={() => onOpenModal('new-person', { drive_folder_id: extractedInfo.id })}
+                  >
+                    Crear usuario con este ID
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  onClick={() => {
+                    setExtractorInput('');
+                    setCopiedId(false);
+                  }}
+                >
+                  Limpiar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="form-hint form-hint-warn" aria-live="polite">
+              {extractedInfo.error}
+            </p>
+          )
+        )}
+      </div>
 
       <div className="sync-controls">
         <label className="sync-folder-input">

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   extractGoogleDocId,
   extractGoogleFolderId,
+  extractDriveResourceInfo,
   validateDocsLink,
   validateDriveFolderInput,
   validateEventDates,
@@ -20,8 +21,9 @@ describe('Validación de enlaces Google Docs y extracción de google_doc_id', ()
     expect(id).toBe('1AbCdEfGhIjKlMnOpQrStUvWxYz12345');
   });
 
-  it('acepta enlace sin sufijo /edit', () => {
+  it('acepta enlace sin sufijo /edit y URLs multi-cuenta /u/0/', () => {
     expect(extractGoogleDocId('https://docs.google.com/document/d/abc1234567890')).toBe('abc1234567890');
+    expect(extractGoogleDocId('https://docs.google.com/document/u/1/d/abc1234567890/edit')).toBe('abc1234567890');
   });
 
   it('rechaza dominios externos y subdominios falsos', () => {
@@ -144,5 +146,29 @@ describe('Normalización de carpetas de Google Drive', () => {
       folderId: '1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO',
     });
     expect(validateDriveFolderInput('https://evil.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO').valid).toBe(false);
+  });
+
+  it('extractDriveResourceInfo distingue enlaces de carpeta de usuario, Docs e IDs inválidos', () => {
+    expect(extractDriveResourceInfo('')).toEqual({ valid: true, kind: null, id: '', label: '' });
+
+    expect(
+      extractDriveResourceInfo('https://drive.google.com/drive/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO?usp=sharing'),
+    ).toEqual({
+      valid: true,
+      kind: 'folder',
+      id: '1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO',
+      label: 'Carpeta de usuario (Drive)',
+    });
+
+    expect(
+      extractDriveResourceInfo('https://docs.google.com/document/u/0/d/1AbCdEfGhIjKlMnOpQrStUvWxYz12345/edit'),
+    ).toEqual({
+      valid: true,
+      kind: 'doc',
+      id: '1AbCdEfGhIjKlMnOpQrStUvWxYz12345',
+      label: 'Documento Google Docs',
+    });
+
+    expect(extractDriveResourceInfo('https://evil.com/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO').valid).toBe(false);
   });
 });

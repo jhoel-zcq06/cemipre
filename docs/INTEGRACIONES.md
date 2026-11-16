@@ -15,8 +15,15 @@ Esta guía detalla la configuración de Google Cloud, Supabase Edge Functions, p
 
 ### Cómo funciona `_shared/google.ts`
 - Firma un JWT `RS256` usando la **Web Crypto API** nativa de Deno (sin librerías externas).
-- Solicita un `access_token` de solo lectura (`drive.readonly` y `documents.readonly`).
+- Solicita un `access_token` de solo lectura (`drive.readonly` y `documents.readonly`) para lectura/resúmenes, y `drive` cuando se crean elementos en Unidades Compartidas.
 - `sync-drive` recorre la carpeta raíz y subcarpetas de primer nivel, detecta Google Docs nuevos, actualiza `drive_modified_time` / `drive_revision_id` / renombres, y marca errores por archivo (`sin_permiso` o `no_encontrada`) sin interrumpir el resto.
+
+### Creación automática de carpeta + Google Doc (`crear-bitacora-drive`)
+- Cuando se agrega una bitácora en la plataforma sin pegar un enlace existente, la Edge Function `crear-bitacora-drive` crea automáticamente en Drive una carpeta con el nombre de la bitácora y dentro un Google Doc con el mismo nombre, sincronizándolo con la ficha del usuario (y vinculando su `drive_folder_id` desde `GOOGLE_DRIVE_ROOT_FOLDER_ID` si aún no tenía uno).
+- **Para cuentas `@gmail.com` personales ("Mi unidad"):** las Service Accounts tienen 0 GB de cuota propia, por lo que Google rechaza crear Docs directamente (`storageQuotaExceeded`). Para resolverlo, despliega el puente [apps_script_drive_bridge.gs](apps_script_drive_bridge.gs) como Web App en la cuenta Google dueña de la carpeta raíz y guarda en Supabase Secrets:
+  - `GOOGLE_DRIVE_WEBHOOK_URL` = URL `/exec` de la Web App de Apps Script
+  - `GOOGLE_DRIVE_WEBHOOK_SECRET` = el mismo secreto configurado en `CEMIPRE_DRIVE_SECRET` dentro de Apps Script.
+- **Para Google Workspace con Unidades Compartidas (Shared Drives):** si la carpeta raíz vive en una Unidad Compartida donde la Service Account es Gestor de contenido / Editor, funciona directamente sin necesidad del puente Apps Script.
 
 ## 2. Resúmenes con IA (`resumen-usuario`)
 

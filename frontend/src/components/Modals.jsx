@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { extractGoogleFolderId } from '../api.js';
 import { Notice } from './SharedUI.jsx';
 
 const FOCUSABLE_SELECTOR = [
@@ -148,43 +149,70 @@ export function AppModal({
       <form onSubmit={onSubmit} className="form-grid">
         {error && <Notice kind="error">{error}</Notice>}
 
-        {(modal === 'new-person' || modal === 'edit-person') && (
-          <>
-            <label>
-              Código identificador
-              <input
-                data-autofocus="true"
-                maxLength={32}
-                required
-                placeholder="Ej.: USR-004"
-                value={form.codigo || ''}
-                onChange={(e) => onUpdateField('codigo', e.target.value)}
-              />
-            </label>
-            <label>
-              Nombre o alias de referencia
-              <input
-                maxLength={120}
-                required
-                placeholder="Ej.: Usuario 004"
-                value={form.nombre || ''}
-                onChange={(e) => onUpdateField('nombre', e.target.value)}
-              />
-            </label>
-            <label>
-              Carpeta en Google Drive (URL o ID, opcional)
-              <input
-                maxLength={500}
-                placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
-                value={form.drive_folder_id || ''}
-                onChange={(e) => onUpdateField('drive_folder_id', e.target.value)}
-              />
-            </label>
-            <p className="form-hint">
-              Si vinculas el ID de carpeta de Drive, la sincronización detectará automáticamente los Google Docs del usuario.
-            </p>
-          </>
-        )}
+        {(modal === 'new-person' || modal === 'edit-person') && (() => {
+          const rawFolderInput = (form.drive_folder_id || '').trim();
+          const extractedFolderId = rawFolderInput ? extractGoogleFolderId(rawFolderInput) : '';
+          return (
+            <>
+              <label>
+                Código identificador
+                <input
+                  data-autofocus="true"
+                  maxLength={32}
+                  required
+                  placeholder="Ej.: USR-004"
+                  value={form.codigo || ''}
+                  onChange={(e) => onUpdateField('codigo', e.target.value)}
+                />
+              </label>
+              <label>
+                Nombre o alias de referencia
+                <input
+                  maxLength={120}
+                  required
+                  placeholder="Ej.: Usuario 004"
+                  value={form.nombre || ''}
+                  onChange={(e) => onUpdateField('nombre', e.target.value)}
+                />
+              </label>
+              <label>
+                Carpeta en Google Drive (URL o ID, opcional)
+                <input
+                  maxLength={500}
+                  placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
+                  value={form.drive_folder_id || ''}
+                  onChange={(e) => onUpdateField('drive_folder_id', e.target.value)}
+                />
+              </label>
+              {rawFolderInput ? (
+                extractedFolderId ? (
+                  <div className="id-preview-row" aria-live="polite">
+                    <span>
+                      ID detectado para usuario: <code>{extractedFolderId}</code>
+                    </span>
+                    {rawFolderInput !== extractedFolderId && (
+                      <button
+                        type="button"
+                        className="btn btn-tiny"
+                        onClick={() => onUpdateField('drive_folder_id', extractedFolderId)}
+                      >
+                        Dejar solo ID
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="form-hint form-hint-warn" aria-live="polite">
+                    Enlace o ID no reconocido. Pega https://drive.google.com/drive/folders/… o el ID limpio.
+                  </p>
+                )
+              ) : (
+                <p className="form-hint">
+                  Si vinculas el ID o enlace de carpeta de Drive, la sincronización detectará automáticamente los Google Docs del usuario.
+                </p>
+              )}
+            </>
+          );
+        })()}
 
         {modal === 'delete-person' && (
           <>
@@ -195,35 +223,57 @@ export function AppModal({
           </>
         )}
 
-        {(modal === 'new-log' || modal === 'edit-log') && (
-          <>
-            <label>
-              Nombre de la bitácora
-              <input
-                data-autofocus="true"
-                maxLength={160}
-                required
-                placeholder="Ej.: Seguimiento general"
-                value={form.titulo || ''}
-                onChange={(e) => onUpdateField('titulo', e.target.value)}
-              />
-            </label>
-            <label>
-              Enlace de Google Docs (opcional)
-              <input
-                type="url"
-                maxLength={500}
-                placeholder="https://docs.google.com/document/d/.../edit"
-                value={form.url_docs || ''}
-                onChange={(e) => onUpdateField('url_docs', e.target.value)}
-              />
-            </label>
-            <p className="form-hint">
-              El ID del documento se extrae automáticamente para resúmenes IA y detección de cambios.
-              La edición del contenido se realiza directamente en Google Docs.
-            </p>
-          </>
-        )}
+        {(modal === 'new-log' || modal === 'edit-log') && (() => {
+          const hasManualUrl = Boolean((form.url_docs || '').trim());
+          const autoCreateDrive = modal === 'new-log' && form.crear_en_drive !== false && !hasManualUrl;
+          const tituloPreview = (form.titulo || '').trim() || 'Bitácora';
+
+          return (
+            <>
+              <label>
+                Nombre de la bitácora
+                <input
+                  data-autofocus="true"
+                  maxLength={160}
+                  required
+                  placeholder="Ej.: Bitácora mayo o Seguimiento"
+                  value={form.titulo || ''}
+                  onChange={(e) => onUpdateField('titulo', e.target.value)}
+                />
+              </label>
+              {modal === 'new-log' && (
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={autoCreateDrive}
+                    disabled={hasManualUrl}
+                    onChange={(e) => onUpdateField('crear_en_drive', e.target.checked)}
+                  />
+                  <span>
+                    Crear carpeta y Google Doc en Drive automáticamente ({tituloPreview})
+                  </span>
+                </label>
+              )}
+              <label>
+                {modal === 'new-log' ? 'Enlace de Google Docs existente (opcional)' : 'Enlace de Google Docs (opcional)'}
+                <input
+                  type="url"
+                  maxLength={500}
+                  placeholder="https://docs.google.com/document/d/.../edit"
+                  value={form.url_docs || ''}
+                  onChange={(e) => onUpdateField('url_docs', e.target.value)}
+                />
+              </label>
+              <p className="form-hint">
+                {hasManualUrl
+                  ? 'Se vinculará el Google Doc existente que pegaste (sin crear archivos nuevos en Drive).'
+                  : autoCreateDrive
+                    ? `Se creará en Drive la carpeta "${tituloPreview}" y dentro un Google Doc con el mismo nombre, quedando sincronizado automáticamente con este usuario.`
+                    : 'El ID del documento se extrae automáticamente para resúmenes IA y detección de cambios.'}
+              </p>
+            </>
+          );
+        })()}
 
         {modal === 'delete-log' && (
           <Notice kind="warn">
