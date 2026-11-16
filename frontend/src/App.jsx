@@ -3,7 +3,7 @@ import { api, isSupabaseConfigured } from './api.js';
 import { InicioView, ResumenesIAView, FavoritosView } from './components/DashboardViews.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
 import { AppModal } from './components/Modals.jsx';
-import { Notice } from './components/SharedUI.jsx';
+import { BrandHeader, Notice } from './components/SharedUI.jsx';
 import {
   ActividadView,
   AdministracionView,
@@ -625,13 +625,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Navegación principal">
-        <div className="brand">
-          <div className="brand-symbol" aria-hidden="true">C</div>
-          <div>
-            <strong>CEMIPRE</strong>
-            <span>Plataforma de bitácoras</span>
-          </div>
-        </div>
+        <BrandHeader subtitle="Plataforma de bitácoras" />
 
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
         <nav className="navigation" aria-label="Secciones">

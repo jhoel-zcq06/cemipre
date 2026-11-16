@@ -52,6 +52,57 @@ function findMatchingUserFolder(folders: DriveFileMeta[], persona: PersonaRow): 
   });
 }
 
+async function postAppsScriptJson(url: string, bodyObj: Record<string, unknown>): Promise<{
+  status: number;
+  ok: boolean;
+  finalUrl: string;
+  text: string;
+}> {
+  let currentUrl = url;
+  let method: 'POST' | 'GET' = 'POST';
+  const serializedBody = JSON.stringify(bodyObj);
+
+  for (let hop = 0; hop < 6; hop++) {
+    const response = await fetch(currentUrl, {
+      method,
+      redirect: 'manual',
+      headers: method === 'POST' ? { 'Content-Type': 'application/json' } : undefined,
+      body: method === 'POST' ? serializedBody : undefined,
+    });
+
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location') || '';
+      await response.body?.cancel();
+      if (!location) {
+        throw new Error(`Apps Script devolvió redirección HTTP ${response.status} sin cabecera Location.`);
+      }
+      const nextUrl = new URL(location, currentUrl);
+      if (nextUrl.protocol !== 'https:') {
+        throw new Error('La redirección de Google Apps Script no usa HTTPS.');
+      }
+      if (nextUrl.hostname.includes('accounts.google.com')) {
+        throw new Error(
+          'Apps Script redirigió al inicio de sesión de Google (accounts.google.com). En Implementar → Administrar implementaciones → Editar (lápiz), cambia "Quién tiene acceso" a "Cualquier usuario" e implementa una nueva versión.',
+        );
+      }
+      currentUrl = nextUrl.toString();
+      if (response.status === 301 || response.status === 302 || response.status === 303) {
+        method = 'GET';
+      }
+      continue;
+    }
+
+    return {
+      status: response.status,
+      ok: response.ok,
+      finalUrl: response.url || currentUrl,
+      text: await response.text(),
+    };
+  }
+
+  throw new Error('Demasiadas redirecciones al consultar Google Apps Script.');
+}
+
 async function createViaAppsScript(params: {
   webhookUrl: string;
   webhookSecret: string;
@@ -69,31 +120,43 @@ async function createViaAppsScript(params: {
   if (parsedUrl.protocol !== 'https:') {
     throw new Error('GOOGLE_DRIVE_WEBHOOK_URL debe usar HTTPS.');
   }
+  if (parsedUrl.pathname.endsWith('/dev')) {
+    throw new Error('GOOGLE_DRIVE_WEBHOOK_URL termina en /dev; reemplázala por la URL de implementación terminada en /exec.');
+  }
 
   const userFolderName = `${params.persona.codigo} - ${params.persona.nombre}`.slice(0, 120);
-  const response = await fetch(params.webhookUrl, {
-    method: 'POST',
-    redirect: 'follow',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      secret: params.webhookSecret,
-      action: 'create_bitacora',
-      root_folder_id: params.rootFolderId,
-      user_folder_id: params.userFolderId,
-      user_codigo: params.persona.codigo,
-      user_nombre: params.persona.nombre,
-      user_folder_name: userFolderName,
-      bitacora_name: params.bitacoraName,
-    }),
+  const response = await postAppsScriptJson(params.webhookUrl, {
+    secret: params.webhookSecret,
+    action: 'create_bitacora',
+    root_folder_id: params.rootFolderId,
+    user_folder_id: params.userFolderId,
+    user_codigo: params.persona.codigo,
+    user_nombre: params.persona.nombre,
+    user_folder_name: userFolderName,
+    bitacora_name: params.bitacoraName,
   });
 
-  const rawText = await response.text();
+  const rawText = response.text;
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(rawText) as Record<string, unknown>;
   } catch {
+    let finalHost = 'desconocido';
+    try {
+      finalHost = new URL(response.finalUrl || params.webhookUrl).hostname;
+    } catch {
+      // mantener fallback
+    }
+    if (finalHost.includes('accounts.google.com')) {
+      throw new Error(
+        'Apps Script redirigió al inicio de sesión de Google (accounts.google.com). En Implementar → Administrar implementaciones → Editar (lápiz), cambia "Quién tiene acceso" de "Solo yo" a "Cualquier usuario" e implementa una nueva versión.',
+      );
+    }
+    const titleMatch = rawText.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const htmlTitle = titleMatch ? titleMatch[1].trim().slice(0, 120) : '';
+    const detail = htmlTitle ? ` (${finalHost}, HTTP ${response.status}: "${htmlTitle}")` : ` (${finalHost}, HTTP ${response.status})`;
     throw new Error(
-      'La Web App de Google Apps Script devolvió HTML en lugar de JSON. Verifica que esté publicada como "Ejecutar como: Yo" y "Quién tiene acceso: Cualquier usuario".',
+      `La Web App de Google Apps Script devolvió HTML en lugar de JSON${detail}. Verifica que la URL termine en /exec, que esté publicada como "Ejecutar como: Yo" y "Quién tiene acceso: Cualquier usuario".`,
     );
   }
 

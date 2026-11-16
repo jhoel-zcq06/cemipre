@@ -36,6 +36,20 @@ export const toDateTimeLocalInput = (iso) => {
   return `${map.year}-${map.month}-${map.day}T${map.hour}:${map.minute}`;
 };
 
+export function BrandHeader({ subtitle }) {
+  return (
+    <div className="brand">
+      <div className="brand-symbol" aria-hidden="true">
+        <img src="/cemipre-logo.png" alt="" className="brand-logo" />
+      </div>
+      <div>
+        <strong>CEMIPRE</strong>
+        <span>{subtitle}</span>
+      </div>
+    </div>
+  );
+}
+
 export function Notice({ children, kind = 'info', onDismiss, className = '' }) {
   const role = kind === 'error' ? 'alert' : 'status';
   return (

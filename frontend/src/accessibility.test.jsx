@@ -59,7 +59,8 @@ describe('Accesibilidad de UI (Modales y Avisos aria-live)', () => {
   });
 
   it('LoginView y PendingApprovalView exponen controles accesibles por teclado', () => {
-    const { rerender } = render(<LoginView />);
+    const { rerender, container } = render(<LoginView />);
+    expect(container.querySelector('img[src="/cemipre-logo.png"]')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Iniciar sesión/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Ingresar' })).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(screen.getByRole('tab', { name: 'Registrarse' }));

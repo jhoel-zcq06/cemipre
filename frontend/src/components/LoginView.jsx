@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, isSupabaseConfigured } from '../api.js';
-import { Notice } from './SharedUI.jsx';
+import { BrandHeader, Notice } from './SharedUI.jsx';
 
 export function LoginView() {
   const [mode, setMode] = useState('login');
@@ -49,13 +49,7 @@ export function LoginView() {
   return (
     <main id="contenido" className="auth-shell">
       <section className="auth-card" aria-labelledby="auth-title">
-        <div className="brand">
-          <div className="brand-symbol" aria-hidden="true">C</div>
-          <div>
-            <strong>CEMIPRE</strong>
-            <span>Plataforma centralizada de bitácoras</span>
-          </div>
-        </div>
+        <BrandHeader subtitle="Plataforma centralizada de bitácoras" />
 
         <h1 id="auth-title" className="auth-title">
           {mode === 'login' ? 'Iniciar sesión de trabajador' : 'Solicitar acceso al equipo'}
@@ -172,13 +166,7 @@ export function PendingApprovalView({ perfil, email, onRefresh, onSignOut, refre
   return (
     <main id="contenido" className="auth-shell">
       <section className="auth-card" aria-labelledby="pending-title">
-        <div className="brand">
-          <div className="brand-symbol" aria-hidden="true">C</div>
-          <div>
-            <strong>CEMIPRE</strong>
-            <span>Validación de cuenta</span>
-          </div>
-        </div>
+        <BrandHeader subtitle="Validación de cuenta" />
 
         <h1 id="pending-title" className="auth-title">Acceso pendiente de aprobación</h1>
         <Notice kind="warn">

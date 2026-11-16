@@ -35,7 +35,8 @@ code { background: #1c2a44; padding: 2px 6px; border-radius: 5px; font-size: .92
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar { width: 256px; flex: 0 0 256px; min-height: 100vh; background: #0e1525; border-right: 1px solid #222e46; padding: 24px 16px 20px; display: flex; flex-direction: column; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
-.brand-symbol { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 42px; background: linear-gradient(140deg, #5476ee, #7c58d6); box-shadow: 0 7px 20px #324da93a; border-radius: 12px; font-size: 22px; font-weight: 800; color: white; }
+.brand-symbol { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 42px; background: #f7f7f7; box-shadow: 0 7px 20px #324da93a; border-radius: 11px; overflow: hidden; padding: 2px; }
+.brand-logo { width: 100%; height: 100%; object-fit: contain; display: block; border-radius: 8px; }
 .brand strong { display: block; font-size: 18px; letter-spacing: .065em; }
 .brand span { display: block; font-size: 11px; color: #9eb0cf; margin-top: 3px; }
 .workspace-label { color: #8ea0c0; font-size: 10px; font-weight: 800; letter-spacing: .13em; margin: 32px 12px 10px; }
