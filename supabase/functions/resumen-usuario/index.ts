@@ -2,8 +2,11 @@ import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
 import {
   exportDocAsText,
   getFileMetadata,
-  getGoogleAccessToken,
+  getUserDriveToken,
   GoogleApiError,
+  type ResolvedDriveToken,
+  resolveDriveTokenCandidates,
+  withDriveTokenFallback,
 } from '../_shared/google.ts';
 import { AuthError, requireAuthorizedWorker } from '../_shared/supabase.ts';
 
@@ -11,6 +14,7 @@ interface PersonaRow {
   id: number;
   codigo: string;
   nombre: string;
+  linked_by_user_id?: string | null;
 }
 
 interface BitacoraRow {
@@ -21,6 +25,7 @@ interface BitacoraRow {
   orden: number;
   actualizada: string;
   drive_modified_time: string | null;
+  linked_by_user_id?: string | null;
 }
 
 interface FuenteEstado {
@@ -239,7 +244,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: personaData, error: personaErr } = await adminClient
       .from('personas')
-      .select('id, codigo, nombre')
+      .select('id, codigo, nombre, linked_by_user_id')
       .eq('id', personaId)
       .maybeSingle();
 
@@ -250,7 +255,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: bitacorasData, error: bitacorasErr } = await adminClient
       .from('bitacoras')
-      .select('id, titulo, google_doc_id, url_docs, orden, actualizada, drive_modified_time')
+      .select('id, titulo, google_doc_id, url_docs, orden, actualizada, drive_modified_time, linked_by_user_id')
       .eq('persona_id', personaId)
       .order('orden', { ascending: true })
       .order('id', { ascending: true });
@@ -262,10 +267,42 @@ Deno.serve(async (req: Request) => {
     const bitacoras = (bitacorasData ?? []) as BitacoraRow[];
     const linked = bitacoras.filter((b) => b.google_doc_id.trim() !== '');
 
-    let token = '';
+    let baseCandidates: ResolvedDriveToken[] = [];
+    let authHint = '';
     if (linked.length > 0) {
-      token = await getGoogleAccessToken();
+      const resolved = await resolveDriveTokenCandidates(adminClient, {
+        userId,
+        preferInstitutional: false,
+        includeServiceAccount: true,
+      });
+      baseCandidates = resolved.candidates;
+      authHint = resolved.lastAuthError;
+      if (baseCandidates.length === 0) {
+        return errorResponse(
+          authHint || 'Conecta tu cuenta de Google Drive (o la cuenta institucional) para leer las bitácoras privadas.',
+          resolved.reconnectNeeded ? 401 : 400,
+          { code: resolved.reconnectNeeded ? 'reconexion_requerida' : 'configuracion' },
+        );
+      }
     }
+
+    const ownerTokenCache = new Map<string, ResolvedDriveToken | null>();
+    for (const c of baseCandidates) {
+      if (c.userId) ownerTokenCache.set(c.userId, c);
+    }
+
+    const getCandidatesForDoc = async (ownerId?: string | null): Promise<ResolvedDriveToken[]> => {
+      if (!ownerId || baseCandidates.some((c) => c.userId === ownerId)) return baseCandidates;
+      if (!ownerTokenCache.has(ownerId)) {
+        try {
+          ownerTokenCache.set(ownerId, await getUserDriveToken(adminClient, ownerId));
+        } catch {
+          ownerTokenCache.set(ownerId, null);
+        }
+      }
+      const ownerToken = ownerTokenCache.get(ownerId);
+      return ownerToken ? [...baseCandidates, ownerToken] : baseCandidates;
+    };
 
     const fuentes: FuenteEstado[] = await mapPool(bitacoras, 3, async (b): Promise<FuenteEstado> => {
       const docId = b.google_doc_id.trim();
@@ -281,10 +318,14 @@ Deno.serve(async (req: Request) => {
       }
 
       try {
-        const [meta, rawContent] = await Promise.all([
-          getFileMetadata(docId, token),
-          exportDocAsText(docId, token),
-        ]);
+        const docCandidates = await getCandidatesForDoc(b.linked_by_user_id || persona.linked_by_user_id);
+        const { result: [meta, rawContent] } = await withDriveTokenFallback(
+          docCandidates,
+          (c) => Promise.all([
+            getFileMetadata(docId, c.token),
+            exportDocAsText(docId, c.token),
+          ]),
+        );
         const fechaDoc = meta.modifiedTime || baseFecha;
         if (meta.trashed) {
           return {
@@ -362,7 +403,7 @@ Deno.serve(async (req: Request) => {
         acciones_pendientes: [],
         incertidumbres: advertenciasPrevias.length > 0
           ? advertenciasPrevias
-          : ['Agrega enlaces válidos de Google Docs compartidos con la Service Account para habilitar los resúmenes.'],
+          : ['Agrega o selecciona bitácoras desde tu Google Drive (sin necesidad de hacerlas públicas) para habilitar los resúmenes.'],
         fuentes: fuentes.map(({ textoMinimizado: _omit, ...rest }) => rest),
       });
     }

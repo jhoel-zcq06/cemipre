@@ -1,8 +1,9 @@
 import '@testing-library/jest-dom/vitest';
 import { useState } from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { cleanup, render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AppModal, Modal } from './components/Modals.jsx';
+import { DrivePickerModal } from './components/DrivePickerModal.jsx';
 import { CarpetasDriveView, AdministracionView } from './components/WorkspaceViews.jsx';
 import { Notice } from './components/SharedUI.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
@@ -206,5 +207,87 @@ describe('Accesibilidad de UI (Modales y Avisos aria-live)', () => {
     fireEvent.change(secondaryAdminSelect, { target: { value: 'trabajador' } });
     expect(onChangeRole).toHaveBeenCalledWith('u-sec', 'trabajador');
     expect(screen.getByRole('button', { name: 'Quitar' })).toBeInTheDocument();
+  });
+
+  it('DrivePickerModal solicita conexión Google cuando no está conectado y permite navegar y seleccionar bitácoras privadas', async () => {
+    const onConnectGoogle = vi.fn();
+    const onConfirm = vi.fn();
+    const onClose = vi.fn();
+    const onBrowse = vi.fn(async ({ folder_id }) => {
+      if (folder_id === 'fld-usr1') {
+        return {
+          items: [
+            {
+              id: 'doc-priv-1',
+              name: 'Bitácora Mayo',
+              kind: 'doc',
+              url: 'https://docs.google.com/document/d/doc-priv-1/edit',
+              modified_time: '2026-11-18T12:00:00Z',
+            },
+            {
+              id: 'doc-priv-2',
+              name: 'Bitácora Junio',
+              kind: 'doc',
+              url: 'https://docs.google.com/document/d/doc-priv-2/edit',
+              modified_time: '2026-11-19T12:00:00Z',
+            },
+          ],
+          next_page_token: '',
+        };
+      }
+      return {
+        items: [
+          { id: 'fld-usr1', name: 'USR-001 - Rin', kind: 'folder' },
+        ],
+        next_page_token: '',
+      };
+    });
+
+    const { rerender } = render(
+      <DrivePickerModal
+        open={true}
+        mode="docs"
+        driveStatus={{ conectado: false, status: 'desconectado' }}
+        onConnectGoogle={onConnectGoogle}
+        onBrowse={onBrowse}
+        onConfirm={onConfirm}
+        onClose={onClose}
+      />,
+    );
+
+    const connectBtn = screen.getByRole('button', { name: /Conectar mi cuenta Google Drive/i });
+    fireEvent.click(connectBtn);
+    expect(onConnectGoogle).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <DrivePickerModal
+        open={true}
+        mode="docs"
+        multiple={true}
+        driveStatus={{ conectado: true, google_email: 'equipo@cemipre.cl', status: 'conectado' }}
+        onConnectGoogle={onConnectGoogle}
+        onBrowse={onBrowse}
+        onConfirm={onConfirm}
+        onClose={onClose}
+      />,
+    );
+
+    expect(await screen.findByText('USR-001 - Rin')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir' }));
+
+    expect(await screen.findByText('Bitácora Mayo')).toBeInTheDocument();
+    const selectBtns = screen.getAllByRole('button', { name: 'Seleccionar' });
+    fireEvent.click(selectBtns[0]);
+    fireEvent.click(selectBtns[1]);
+
+    const confirmBtn = screen.getByRole('button', { name: /Vincular 2 bitácoras/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(onConfirm).toHaveBeenCalledWith([
+        expect.objectContaining({ id: 'doc-priv-1', name: 'Bitácora Mayo' }),
+        expect.objectContaining({ id: 'doc-priv-2', name: 'Bitácora Junio' }),
+      ]);
+    });
   });
 });

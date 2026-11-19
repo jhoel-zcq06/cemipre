@@ -29,6 +29,7 @@ export function UsuariosView({
   onSelectPerson,
   onToggleFavorite,
   onOpenModal,
+  onOpenDrivePicker,
   onGenerateSummary,
   onAddComment,
   onDeleteComment,
@@ -122,7 +123,11 @@ export function UsuariosView({
                 <div>
                   <p className="eyebrow">
                     {person.codigo}
-                    {person.drive_folder_id ? ' · Drive vinculado' : ''}
+                    {person.drive_folder_name
+                      ? ` · Drive: ${person.drive_folder_name}`
+                      : person.drive_folder_id
+                        ? ' · Drive vinculado'
+                        : ''}
                   </p>
                   <h2>{person.nombre}</h2>
                   <p className="muted">{person.bitacoras.length} bitácoras registradas</p>
@@ -151,6 +156,21 @@ export function UsuariosView({
                     onClick={() => onOpenModal('delete-person', person)}
                   >
                     Eliminar
+                  </button>
+                )}
+                {onOpenDrivePicker && (
+                  <button
+                    className="btn btn-tiny btn-outline"
+                    type="button"
+                    onClick={() => onOpenDrivePicker({
+                      mode: 'docs',
+                      multiple: true,
+                      title: `Seleccionar bitácoras en Drive para ${person.codigo}`,
+                      target: 'direct-add-logs',
+                      context: { persona_id: person.id },
+                    })}
+                  >
+                    ☁ Elegir de Drive
                   </button>
                 )}
                 <button
@@ -589,15 +609,31 @@ export function CarpetasDriveView({
   syncResult,
   syncBusy,
   people,
+  isAdmin = false,
+  driveStatus = null,
+  driveAuthBusy = false,
   onSyncDrive,
   onOpenUser,
   onOpenModal,
+  onConnectGoogleDrive,
+  onDisconnectGoogleDrive,
+  onSetInstitutionalDrive,
+  onToggleAutoSync,
+  onSaveRootFolder,
+  onOpenDrivePicker,
 }) {
   const [rootFolderId, setRootFolderId] = useState('');
   const [extractorInput, setExtractorInput] = useState('');
   const [copiedId, setCopiedId] = useState(false);
 
   const extractedInfo = extractDriveResourceInfo(extractorInput);
+  const autoSyncActive = syncState?.auto_sync_enabled !== false;
+  const intervalMin = syncState?.auto_sync_interval_min || 5;
+  const institutionalConnected = Boolean(driveStatus?.institucional?.conectado)
+    || syncState?.connection_status === 'conectado';
+  const institutionalNeedsReconnect = driveStatus?.institucional?.status === 'requiere_reconexion'
+    || syncState?.connection_status === 'requiere_reconexion';
+  const institutionalEmail = driveStatus?.institucional?.google_email || syncState?.institutional_email || '';
 
   async function handleCopyId() {
     if (!extractedInfo.id) return;
@@ -611,30 +647,302 @@ export function CarpetasDriveView({
   }
 
   return (
-    <section className="panel wide-panel" aria-label="Sincronización de carpetas Google Drive">
+    <section className="panel wide-panel" aria-label="Sincronización automática de carpetas Google Drive">
       <div className="panel-title-between">
         <div className="panel-title">
-          <h2>Carpetas y Google Docs en Drive</h2>
+          <h2>Sincronización automática con Google Drive</h2>
+          <span className={`status-badge ${autoSyncActive ? 'badge-ok' : 'badge-warn'}`}>
+            {autoSyncActive ? `● Automática cada ${intervalMin} min` : '○ Automática pausada'}
+          </span>
         </div>
         <button
           type="button"
-          className="btn btn-primary"
+          className="btn btn-tiny"
           disabled={syncBusy}
           aria-busy={syncBusy}
           onClick={() => onSyncDrive({ root_folder_id: rootFolderId.trim() || undefined })}
+          title="La sincronización ocurre automáticamente; usa este botón solo para una comprobación inmediata"
         >
-          {syncBusy ? 'Sincronizando Drive…' : 'Sincronizar con Google Drive'}
+          {syncBusy ? 'Comprobando Drive…' : 'Comprobar ahora'}
         </button>
       </div>
 
       <Notice>
-        Conecta la carpeta raíz compartida con la <strong>Service Account</strong> de CEMIPRE para detectar
-        carpetas de usuarios, nuevos Google Docs, renombres y posibles archivos sin permiso de lectura.
+        La plataforma sincroniza automáticamente carpetas, nuevos Google Docs, renombres y permisos
+        cada <strong>{intervalMin} minutos</strong> y al vincular fichas —{' '}
+        <strong>sin necesidad de dejar enlaces públicos</strong> («cualquier persona con el enlace»).
       </Notice>
+
+      {institutionalNeedsReconnect && (
+        <Notice kind="warn">
+          La cuenta Google institucional de sincronización automática requiere reconexión.{' '}
+          {isAdmin && onConnectGoogleDrive && (
+            <button
+              type="button"
+              className="inline-button"
+              disabled={driveAuthBusy}
+              onClick={() => onConnectGoogleDrive({ set_institutional: true })}
+            >
+              Reconectar cuenta institucional
+            </button>
+          )}
+        </Notice>
+      )}
+
+      <div className="drive-cards-grid">
+        <article className="sync-summary-box drive-connection-card">
+          <div className="panel-heading-inline">
+            <h3>Tu cuenta Google Drive</h3>
+            {driveStatus?.conectado ? (
+              <span className="status-badge badge-ok">● Conectada</span>
+            ) : driveStatus?.status === 'requiere_reconexion' ? (
+              <span className="status-badge badge-warn">! Reconectar</span>
+            ) : (
+              <span className="status-badge badge-muted">○ Sin conectar</span>
+            )}
+          </div>
+          <p className="muted">
+            {driveStatus?.conectado
+              ? `Sesión activa como ${driveStatus.google_email || 'cuenta Google'}. Puedes explorar y elegir carpetas o bitácoras privadas directamente desde Google Drive.`
+              : 'Conecta tu cuenta Google para explorar tus carpetas privadas y seleccionar bitácoras directamente sin copiar ni publicar enlaces.'}
+          </p>
+          {driveStatus?.conectado && !driveStatus?.tiene_refresh_token && (
+            <p className="form-hint form-hint-warn">
+              Tu sesión Google actual es temporal (~1 h). Pulsa «Autorizar acceso continuo» para mantener tus carpetas privadas sincronizadas en segundo plano.
+            </p>
+          )}
+          <div className="detail-actions">
+            {onConnectGoogleDrive && (
+              <button
+                type="button"
+                className="btn btn-primary btn-tiny-fill"
+                disabled={driveAuthBusy}
+                onClick={() => onConnectGoogleDrive({ set_institutional: false })}
+              >
+                {driveStatus?.conectado
+                  ? (driveStatus.tiene_refresh_token ? 'Reconectar mi Google' : 'Autorizar acceso continuo')
+                  : 'Conectar mi Google Drive'}
+              </button>
+            )}
+            {driveStatus?.conectado && onDisconnectGoogleDrive && (
+              <button
+                type="button"
+                className="btn btn-tiny btn-danger-outline"
+                disabled={driveAuthBusy}
+                onClick={onDisconnectGoogleDrive}
+              >
+                Desconectar
+              </button>
+            )}
+          </div>
+        </article>
+
+        <article className="sync-summary-box drive-connection-card">
+          <div className="panel-heading-inline">
+            <h3>Sincronización automática del equipo</h3>
+            {institutionalConnected ? (
+              <span className="status-badge badge-ok">● Operativa</span>
+            ) : institutionalNeedsReconnect ? (
+              <span className="status-badge badge-warn">! Requiere reconexión</span>
+            ) : (
+              <span className="status-badge badge-muted">○ Pendiente</span>
+            )}
+          </div>
+          <p className="muted">
+            {institutionalEmail
+              ? `Cuenta principal CEMIPRE: ${institutionalEmail}. Sincroniza carpetas privadas del equipo y envía avisos automáticos 24/7.`
+              : syncState?.auth_mode === 'service_account'
+                ? 'Operando actualmente con Service Account de respaldo. Un administrador puede conectar una cuenta Google Drive institucional para prescindir de permisos manuales.'
+                : 'Un administrador debe conectar la cuenta Google que tiene acceso privado a la carpeta raíz de CEMIPRE.'}
+          </p>
+          {isAdmin && (
+            <div className="detail-actions">
+              {onConnectGoogleDrive && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-tiny-fill"
+                  disabled={driveAuthBusy}
+                  onClick={() => onConnectGoogleDrive({ set_institutional: true })}
+                >
+                  {institutionalEmail ? 'Cambiar / reconectar cuenta CEMIPRE' : 'Conectar cuenta Google CEMIPRE'}
+                </button>
+              )}
+              {driveStatus?.conectado
+                && driveStatus?.tiene_refresh_token
+                && !driveStatus?.es_institucional
+                && onSetInstitutionalDrive && (
+                  <button
+                    type="button"
+                    className="btn btn-tiny"
+                    disabled={driveAuthBusy}
+                    onClick={onSetInstitutionalDrive}
+                  >
+                    Usar mi cuenta conectada
+                  </button>
+              )}
+              {onToggleAutoSync && (
+                <button
+                  type="button"
+                  className="btn btn-tiny"
+                  disabled={driveAuthBusy}
+                  onClick={() => onToggleAutoSync(!autoSyncActive)}
+                >
+                  {autoSyncActive ? 'Pausar auto-sync' : 'Activar auto-sync'}
+                </button>
+              )}
+            </div>
+          )}
+        </article>
+      </div>
+
+      <div className="sync-summary-box">
+        <div className="panel-heading-inline">
+          <h3>Carpeta raíz automática de CEMIPRE</h3>
+          {isAdmin && onOpenDrivePicker && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-tiny-fill"
+              onClick={() => onOpenDrivePicker({
+                mode: 'folder',
+                multiple: false,
+                title: 'Elegir carpeta raíz de CEMIPRE en Google Drive',
+                target: 'root-folder',
+              })}
+            >
+              ☁ Elegir carpeta raíz desde Drive
+            </button>
+          )}
+        </div>
+        <p className="muted">
+          {syncState?.root_folder_id
+            ? (
+              <>
+                Carpeta vinculada:{' '}
+                <strong>{syncState.root_folder_name || 'Carpeta raíz configurada'}</strong>{' '}
+                (<code>{syncState.root_folder_id}</code>). Las subcarpetas de usuarios y sus Google Docs se sincronizan automáticamente.
+              </>
+            )
+            : 'Sin carpeta raíz seleccionada desde la plataforma (usará GOOGLE_DRIVE_ROOT_FOLDER_ID si está en secretos, o sincronizará las carpetas vinculadas en cada ficha).'}
+        </p>
+        {isAdmin && onSaveRootFolder && (
+          <div className="drive-root-manual-row">
+            <label className="sync-folder-input">
+              <span>O pegar URL/ID de carpeta raíz manualmente</span>
+              <input
+                type="text"
+                placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
+                value={rootFolderId}
+                onChange={(e) => setRootFolderId(e.target.value)}
+              />
+            </label>
+            <div className="detail-actions">
+              <button
+                type="button"
+                className="btn btn-tiny btn-primary"
+                disabled={driveAuthBusy || !rootFolderId.trim()}
+                onClick={async () => {
+                  const ok = await onSaveRootFolder({ root_folder_id: rootFolderId.trim() });
+                  if (ok) setRootFolderId('');
+                }}
+              >
+                Guardar carpeta raíz
+              </button>
+              {syncState?.root_folder_id && (
+                <button
+                  type="button"
+                  className="btn btn-tiny btn-danger-outline"
+                  disabled={driveAuthBusy}
+                  onClick={() => onSaveRootFolder({ root_folder_id: '', root_folder_name: '' })}
+                >
+                  Quitar carpeta raíz
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {syncState && (
+        <div className="sync-summary-box">
+          <strong>Última sincronización automática registrada:</strong>{' '}
+          <span>
+            {syncState.ultima_sincronizacion
+              ? formatDateTime(syncState.ultima_sincronizacion)
+              : 'Pendiente de primera ejecución'}
+          </span>
+          <p className="muted">{syncState.ultimo_estado || 'Listo para sincronizar automáticamente.'}</p>
+        </div>
+      )}
+
+      {syncResult && (
+        <div className="sync-report" aria-live="polite">
+          <h3>Resultado de la última comprobación</h3>
+          <div className="stats stats-4">
+            <div className="stat-card"><span>Personas procesadas</span><strong>{syncResult.personas_procesadas}</strong></div>
+            <div className="stat-card"><span>Docs nuevos</span><strong>{syncResult.nuevas_bitacoras}</strong></div>
+            <div className="stat-card"><span>Bitácoras verificadas</span><strong>{syncResult.bitacoras_actualizadas}</strong></div>
+            <div className="stat-card"><span>Alertas permisos/faltantes</span><strong>{(syncResult.errores_permisos || 0) + (syncResult.no_encontradas || 0)}</strong></div>
+          </div>
+          {Array.isArray(syncResult.detalles) && syncResult.detalles.length > 0 && (
+            <ul className="sources-grid">
+              {syncResult.detalles.map((d, idx) => (
+                <li key={`det-${idx}`}>
+                  <strong>[{d.tipo}]</strong> {d.mensaje}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      <div className="section-heading">
+        <h3>Carpetas por usuario (página actual)</h3>
+        <span>{people.length} usuarios</span>
+      </div>
+
+      <div className="logs-list">
+        {people.map((p) => (
+          <article key={p.id} className="log-row">
+            <span className="doc-icon" aria-hidden="true">▤</span>
+            <div className="log-body">
+              <strong>{p.codigo} · {p.nombre}</strong>
+              <small>
+                {p.drive_folder_id
+                  ? `${p.drive_folder_name ? `${p.drive_folder_name} · ` : ''}ID: ${p.drive_folder_id}`
+                  : 'Sin carpeta Drive asignada (elige una desde Drive o usa la carpeta raíz automática)'}
+              </small>
+            </div>
+            <div className="log-actions">
+              {onOpenDrivePicker && (
+                <button
+                  type="button"
+                  className="btn btn-tiny btn-secondary"
+                  onClick={() => onOpenDrivePicker({
+                    mode: 'folder',
+                    multiple: false,
+                    title: `Elegir carpeta Drive para ${p.codigo}`,
+                    target: 'assign-user-folder',
+                    context: p,
+                  })}
+                >
+                  ☁ Elegir carpeta
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-tiny btn-outline"
+                onClick={() => onOpenUser(p.id)}
+              >
+                Ver bitácoras
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
 
       <div className="id-extractor-box">
         <label className="sync-folder-input" htmlFor="drive-id-extractor-input">
-          <span>Extractor rápido de ID de Google Drive (pega un enlace y obtén el ID para usuario)</span>
+          <span>Extractor rápido de ID de Google Drive (alternativa manual si prefieres pegar un enlace)</span>
           <input
             id="drive-id-extractor-input"
             type="text"
@@ -685,89 +993,6 @@ export function CarpetasDriveView({
             </p>
           )
         )}
-      </div>
-
-      <div className="sync-controls">
-        <label className="sync-folder-input">
-          <span>Carpeta raíz en Drive (URL o ID, opcional si ya está en secretos de Supabase)</span>
-          <input
-            type="text"
-            placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
-            value={rootFolderId}
-            onChange={(e) => setRootFolderId(e.target.value)}
-          />
-        </label>
-      </div>
-
-      {syncState && (
-        <div className="sync-summary-box">
-          <strong>Estado global registrado:</strong>{' '}
-          <span>
-            {syncState.ultima_sincronizacion
-              ? formatDateTime(syncState.ultima_sincronizacion)
-              : 'Sin sincronizaciones previas'}
-          </span>
-          <p className="muted">{syncState.ultimo_estado || 'Listo para sincronizar.'}</p>
-        </div>
-      )}
-
-      {syncResult && (
-        <div className="sync-report" aria-live="polite">
-          <h3>Resultado de la última sincronización</h3>
-          <div className="stats stats-4">
-            <div className="stat-card"><span>Personas procesadas</span><strong>{syncResult.personas_procesadas}</strong></div>
-            <div className="stat-card"><span>Docs nuevos</span><strong>{syncResult.nuevas_bitacoras}</strong></div>
-            <div className="stat-card"><span>Bitácoras verificadas</span><strong>{syncResult.bitacoras_actualizadas}</strong></div>
-            <div className="stat-card"><span>Alertas permisos/faltantes</span><strong>{(syncResult.errores_permisos || 0) + (syncResult.no_encontradas || 0)}</strong></div>
-          </div>
-          {Array.isArray(syncResult.detalles) && syncResult.detalles.length > 0 && (
-            <ul className="sources-grid">
-              {syncResult.detalles.map((d, idx) => (
-                <li key={`det-${idx}`}>
-                  <strong>[{d.tipo}]</strong> {d.mensaje}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      <div className="section-heading">
-        <h3>Carpetas por usuario (página actual)</h3>
-        <span>{people.length} usuarios</span>
-      </div>
-
-      <div className="logs-list">
-        {people.map((p) => (
-          <article key={p.id} className="log-row">
-            <span className="doc-icon" aria-hidden="true">▤</span>
-            <div className="log-body">
-              <strong>{p.codigo} · {p.nombre}</strong>
-              <small>
-                {p.drive_folder_id
-                  ? `Carpeta Drive ID: ${p.drive_folder_id}`
-                  : 'Sin carpeta Drive asignada (puedes editar el usuario o usar carpeta raíz)'}
-              </small>
-            </div>
-            <div className="log-actions">
-              <button
-                type="button"
-                className="btn btn-tiny"
-                disabled={syncBusy}
-                onClick={() => onSyncDrive({ persona_id: p.id })}
-              >
-                Sincronizar ficha
-              </button>
-              <button
-                type="button"
-                className="btn btn-tiny btn-outline"
-                onClick={() => onOpenUser(p.id)}
-              >
-                Ver bitácoras
-              </button>
-            </div>
-          </article>
-        ))}
       </div>
     </section>
   );

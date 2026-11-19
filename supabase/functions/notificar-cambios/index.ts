@@ -1,9 +1,10 @@
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
+import { timingSafeEqual } from '../_shared/crypto.ts';
 import {
-  getGoogleAccessToken,
   getStartPageToken,
   GoogleApiError,
   listDriveChanges,
+  resolveDriveTokenCandidates,
 } from '../_shared/google.ts';
 import { getSupabaseAdmin } from '../_shared/supabase.ts';
 
@@ -19,18 +20,6 @@ interface BitacoraWithPersona {
     codigo: string;
     nombre: string;
   } | null;
-}
-
-function timingSafeEqual(a: string, b: string): boolean {
-  const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  if (ab.length !== bb.length) return false;
-  let diff = 0;
-  for (let i = 0; i < ab.length; i++) {
-    diff |= ab[i] ^ bb[i];
-  }
-  return diff === 0;
 }
 
 function formatChileTime(iso: string): string {
@@ -150,7 +139,21 @@ Deno.serve(async (req: Request) => {
 
   try {
     const adminClient = getSupabaseAdmin();
-    const token = await getGoogleAccessToken();
+    const { candidates, reconnectNeeded, lastAuthError } = await resolveDriveTokenCandidates(adminClient, {
+      preferInstitutional: true,
+      includeServiceAccount: true,
+    });
+
+    if (candidates.length === 0) {
+      return jsonResponse({
+        ok: true,
+        skipped: true,
+        reason: reconnectNeeded ? 'requiere_reconexion' : 'sin_credenciales_drive',
+        message: lastAuthError || 'Conecta una cuenta Google Drive institucional para habilitar avisos.',
+      });
+    }
+
+    const token = candidates[0].token;
     const debounceMinutes = Math.max(1, Number(Deno.env.get('NOTIFY_DEBOUNCE_MINUTES') || '15'));
     const appBaseUrl = (Deno.env.get('APP_BASE_URL') || 'https://cemipre-plataforma.vercel.app').replace(/\/$/, '');
     const isResendProvider = (Deno.env.get('EMAIL_PROVIDER') || 'resend').trim().toLowerCase() !== 'webhook';
@@ -182,7 +185,6 @@ Deno.serve(async (req: Request) => {
     try {
       changesResult = await listDriveChanges(currentToken, token);
     } catch (err) {
-      // Si el token expiró (410/400), reiniciar el cursor sin perder el ciclo futuro
       if (err instanceof GoogleApiError && (err.status === 410 || err.status === 400)) {
         const refreshedToken = await getStartPageToken(token);
         await adminClient.from('drive_sync_state').upsert({
@@ -204,15 +206,29 @@ Deno.serve(async (req: Request) => {
       headRevisionId: string;
       name?: string;
     }>();
+    const trashedIds = new Set<string>();
 
     for (const ch of changesResult.changes) {
-      if (!ch.fileId || ch.removed || ch.file?.trashed) continue;
+      if (!ch.fileId) continue;
+      if (ch.removed || ch.file?.trashed) {
+        trashedIds.add(ch.fileId);
+        changedByFileId.delete(ch.fileId);
+        continue;
+      }
+      trashedIds.delete(ch.fileId);
       changedByFileId.set(ch.fileId, {
         fileId: ch.fileId,
         modifiedTime: ch.file?.modifiedTime || ch.time || new Date().toISOString(),
         headRevisionId: ch.file?.headRevisionId || '',
         name: ch.file?.name,
       });
+    }
+
+    if (trashedIds.size > 0) {
+      await adminClient
+        .from('bitacoras')
+        .update({ estado_sync: 'no_encontrada' })
+        .in('google_doc_id', Array.from(trashedIds));
     }
 
     const changedIds = Array.from(changedByFileId.keys());
@@ -246,10 +262,13 @@ Deno.serve(async (req: Request) => {
           const change = changedByFileId.get(b.google_doc_id);
           if (!change) continue;
 
-          // Actualizar metadatos de última edición detectada
+          const updatedTitle = change.name?.trim() ? change.name.trim().slice(0, 160) : b.titulo;
+
+          // Actualizar metadatos de última edición (y renombre si corresponde)
           await adminClient
             .from('bitacoras')
             .update({
+              titulo: updatedTitle,
               drive_modified_time: change.modifiedTime,
               drive_revision_id: change.headRevisionId || b.drive_revision_id,
               estado_sync: 'sincronizada',
@@ -301,12 +320,12 @@ Deno.serve(async (req: Request) => {
           const fechaLegible = formatChileTime(change.modifiedTime);
 
           // IMPORTANTE (Privacidad): nunca incluir contenido clínico del Google Doc en el correo
-          const subject = `[CEMIPRE] Bitácora actualizada: ${b.titulo} (${b.personas?.codigo || b.persona_id})`;
+          const subject = `[CEMIPRE] Bitácora actualizada: ${updatedTitle} (${b.personas?.codigo || b.persona_id})`;
           const textBody = [
             'Se detectó una actualización en Google Docs vinculada a la plataforma CEMIPRE.',
             '',
             `Usuario: ${personaLabel}`,
-            `Bitácora: ${b.titulo}`,
+            `Bitácora: ${updatedTitle}`,
             `Última modificación: ${fechaLegible}`,
             '',
             `Abrir plataforma: ${appBaseUrl}`,
@@ -321,7 +340,7 @@ Deno.serve(async (req: Request) => {
               <p>Se detectó una edición reciente en un documento vinculado:</p>
               <ul>
                 <li><strong>Usuario:</strong> ${escapeHtml(personaLabel)}</li>
-                <li><strong>Bitácora:</strong> ${escapeHtml(b.titulo)}</li>
+                <li><strong>Bitácora:</strong> ${escapeHtml(updatedTitle)}</li>
                 <li><strong>Fecha:</strong> ${escapeHtml(fechaLegible)}</li>
               </ul>
               <p>
@@ -331,7 +350,6 @@ Deno.serve(async (req: Request) => {
             </div>
           `;
 
-          // Enviar correo por lote respetando el límite de frecuencia de Resend (2 req/s)
           for (const email of recipientEmails) {
             if (emailSendCount > 0 && isResendProvider) {
               await sleep(600);
@@ -373,12 +391,13 @@ Deno.serve(async (req: Request) => {
       id: 'global',
       start_page_token: changesResult.newStartPageToken,
       ultima_sincronizacion: new Date().toISOString(),
-      ultimo_estado: `Changes revisados (${changedIds.length} archivos en Drive, ${notificacionesEnviadas} correos enviados, ${notificacionesOmitidas} agrupados).`,
+      ultimo_estado: `Sincronización automática y avisos: ${changedIds.length} cambios en Drive, ${notificacionesEnviadas} correos enviados, ${notificacionesOmitidas} agrupados.`,
       actualizado: new Date().toISOString(),
     });
 
     return jsonResponse({
       ok: true,
+      auth_source: candidates[0].source,
       cambios_en_drive: changedIds.length,
       notificaciones_enviadas: notificacionesEnviadas,
       notificaciones_omitidas: notificacionesOmitidas,

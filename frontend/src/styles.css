@@ -243,6 +243,38 @@ h2, h3, h4, p { margin-top: 0; }
 .id-preview-row code { color: #eefdf6; word-break: break-all; }
 .sync-report { margin: 16px 0; display: grid; gap: 12px; }
 .sync-report h3 { font-size: 14px; margin: 0; }
+.drive-cards-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.drive-connection-card { margin-bottom: 0; display: grid; gap: 10px; align-content: start; }
+.drive-connection-card h3 { font-size: 14px; margin: 0; }
+.drive-root-manual-row { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.drive-root-manual-row .sync-folder-input { flex: 1 1 280px; }
+.drive-inline-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.selected-drive-docs-box { background: #101a2c; border: 1px solid #35547a; border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
+
+/* Drive Picker Modal */
+.drive-picker-body { display: grid; gap: 12px; }
+.drive-picker-connect { display: grid; gap: 12px; }
+.drive-picker-account { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.drive-picker-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.drive-picker-search { display: flex; gap: 8px; align-items: center; }
+.drive-picker-search input { flex: 1 1 180px; background: #0c1627; border: 1px solid #415573; color: #eef3ff; border-radius: 8px; padding: 8px 11px; min-width: 0; }
+.drive-breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 12px; color: #a7b8d5; background: #0e1727; border: 1px solid #2b3c5c; border-radius: 8px; padding: 6px 10px; }
+.drive-crumb-sep { display: inline-flex; align-items: center; gap: 4px; }
+.drive-crumb-btn { background: none; border: 0; color: #c7dcff; font-weight: 600; padding: 2px 4px; border-radius: 5px; }
+.drive-crumb-btn:hover { background: #1d2d4a; }
+.drive-current-folder-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #13253e; border: 1px solid #365785; border-radius: 8px; padding: 8px 12px; font-size: 12px; }
+.drive-picker-list { max-height: 310px; overflow: auto; border: 1px solid #2c3e5e; border-radius: 10px; background: #0e1727; }
+.drive-picker-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #213049; }
+.drive-picker-row:last-child { border-bottom: 0; }
+.drive-picker-row.selected { background: #1c3154; }
+.drive-item-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; border-radius: 8px; background: #1d3557; color: #cfe3ff; font-weight: 700; }
+.drive-item-meta { min-width: 0; flex: 1; }
+.drive-item-meta strong, .drive-item-meta small { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drive-item-meta strong { font-size: 13px; }
+.drive-item-meta small { font-size: 11px; color: #9db0ce; margin-top: 2px; }
+.drive-item-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.drive-picker-more { padding: 10px; text-align: center; border-top: 1px solid #213049; }
+.drive-picker-footer { display: grid; gap: 10px; padding-top: 4px; border-top: 1px solid #2b3b59; }
 
 .role-select, .whitelist-form select { background: #0c1627; border: 1px solid #415573; color: #eef3ff; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
 .whitelist-form { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 18px; }
@@ -281,6 +313,7 @@ h2, h3, h4, p { margin-top: 0; }
   .topbar { padding: 10px 20px; }
   .stats-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-grid { grid-template-columns: 1fr; }
+  .drive-cards-grid { grid-template-columns: 1fr; }
   .content-grid { grid-template-columns: minmax(220px, .9fr) minmax(0, 1.4fr); }
   .log-row { align-items: flex-start; flex-wrap: wrap; }
   .log-actions { width: 100%; justify-content: flex-start; padding-left: 51px; }

@@ -11,6 +11,9 @@ import {
   mapActivityRow,
   formatApiError,
   hasRealSupabaseConfig,
+  GOOGLE_DRIVE_OAUTH_SCOPES,
+  buildGoogleOAuthOptions,
+  isDriveSyncStale,
 } from './api.js';
 
 describe('Validación de enlaces Google Docs y extracción de google_doc_id', () => {
@@ -170,5 +173,44 @@ describe('Normalización de carpetas de Google Drive', () => {
     });
 
     expect(extractDriveResourceInfo('https://evil.com/folders/1Kt_3qhsgVXFzAC7U1K4-EMmExZVSnEsO').valid).toBe(false);
+  });
+});
+
+describe('OAuth Google Drive y sincronización automática', () => {
+  it('buildGoogleOAuthOptions solicita scope de Drive y acceso offline por defecto', () => {
+    const opts = buildGoogleOAuthOptions({ redirectTo: 'https://cemipre.vercel.app' });
+    expect(opts.redirectTo).toBe('https://cemipre.vercel.app');
+    expect(opts.scopes).toBe(GOOGLE_DRIVE_OAUTH_SCOPES);
+    expect(opts.queryParams).toEqual({
+      access_type: 'offline',
+      prompt: 'select_account',
+    });
+
+    const plain = buildGoogleOAuthOptions({ withDrive: false, redirectTo: 'https://cemipre.vercel.app' });
+    expect(plain.scopes).toBeUndefined();
+    expect(plain.queryParams).toBeUndefined();
+  });
+
+  it('isDriveSyncStale respeta pausa, bloqueo en curso e intervalo configurado', () => {
+    expect(isDriveSyncStale(null)).toBe(false);
+    expect(isDriveSyncStale({ auto_sync_enabled: false, ultima_sincronizacion: null })).toBe(false);
+    expect(isDriveSyncStale({ auto_sync_enabled: true, sync_en_curso: true, ultima_sincronizacion: null })).toBe(false);
+    expect(isDriveSyncStale({ auto_sync_enabled: true, sync_en_curso: false, ultima_sincronizacion: null })).toBe(true);
+
+    const freshIso = new Date(Date.now() - 60_000).toISOString();
+    expect(isDriveSyncStale({
+      auto_sync_enabled: true,
+      auto_sync_interval_min: 5,
+      sync_en_curso: false,
+      ultima_sincronizacion: freshIso,
+    })).toBe(false);
+
+    const staleIso = new Date(Date.now() - 10 * 60_000).toISOString();
+    expect(isDriveSyncStale({
+      auto_sync_enabled: true,
+      auto_sync_interval_min: 5,
+      sync_en_curso: false,
+      ultima_sincronizacion: staleIso,
+    })).toBe(true);
   });
 });

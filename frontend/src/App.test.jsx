@@ -26,6 +26,54 @@ vi.mock('./api.js', async (importOriginal) => {
       listFavorites: vi.fn(async () => []),
       events: vi.fn(async () => ({ eventos: [] })),
       getDriveSyncState: vi.fn(async () => null),
+      getGoogleDriveStatus: vi.fn(async () => ({
+        conectado: true,
+        google_email: 'admin@cemipre.cl',
+        status: 'conectado',
+        tiene_refresh_token: true,
+        es_institucional: true,
+        institucional: { conectado: true, google_email: 'admin@cemipre.cl', status: 'conectado', es_propia: true },
+      })),
+      subscribeDriveSyncState: vi.fn(() => () => {}),
+      syncDrive: vi.fn(async () => ({
+        ok: true,
+        skipped: false,
+        hubo_cambios: false,
+        personas_procesadas: 2,
+        nuevas_bitacoras: 0,
+        bitacoras_actualizadas: 1,
+      })),
+      browseDrive: vi.fn(async () => ({
+        ok: true,
+        items: [
+          {
+            id: 'privateDoc987654',
+            name: 'Bitácora Privada Google',
+            kind: 'doc',
+            url: 'https://docs.google.com/document/d/privateDoc987654/edit',
+            modified_time: '2026-11-19T12:00:00Z',
+          },
+        ],
+        next_page_token: '',
+      })),
+      createLogsFromDrive: vi.fn(async ({ persona_id, docs }) => ({
+        inserted: docs.map((d, idx) => ({
+          id: 50 + idx,
+          persona_id,
+          titulo: d.name,
+          url_docs: d.url,
+          google_doc_id: d.id,
+          estado_sync: 'sincronizada',
+        })),
+        skipped: 0,
+      })),
+      createUser: vi.fn(async ({ codigo, nombre, drive_folder_id, drive_folder_name }) => ({
+        id: 99,
+        codigo,
+        nombre,
+        drive_folder_id,
+        drive_folder_name,
+      })),
       users: vi.fn(async () => ({
         personas: [
           { id: 1, codigo: 'USR-001', nombre: 'Rin', total_bitacoras: 1, drive_folder_id: 'folder-1' },
@@ -101,6 +149,7 @@ import { api } from './api.js';
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  api.getDriveSyncState.mockResolvedValue(null);
 });
 
 describe('Flujo de resumen IA en App', () => {
@@ -239,6 +288,43 @@ describe('Flujo de resumen IA en App', () => {
           persona_id: 1,
           titulo: 'bitacora-manual',
           url_docs: 'https://docs.google.com/document/d/manualDoc123456/edit',
+        },
+        expect.objectContaining({ id: 'u-1' }),
+      );
+    });
+  });
+
+  it('sincroniza automáticamente en segundo plano al cargar cuando syncState está vencido y permite elegir bitácoras privadas desde Drive', async () => {
+    api.getDriveSyncState.mockResolvedValue({
+      id: 'global',
+      auto_sync_enabled: true,
+      auto_sync_interval_min: 5,
+      sync_en_curso: false,
+      ultima_sincronizacion: new Date(Date.now() - 20 * 60_000).toISOString(),
+      ultimo_estado: 'Ok',
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(api.syncDrive).toHaveBeenCalledWith({ auto: true });
+    });
+
+    const navUsers = await screen.findByRole('button', { name: 'Usuarios' });
+    fireEvent.click(navUsers);
+
+    const pickFromDriveBtn = await screen.findByRole('button', { name: /Elegir de Drive/i });
+    fireEvent.click(pickFromDriveBtn);
+
+    expect(await screen.findByText('Bitácora Privada Google')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Seleccionar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar bitácora' }));
+
+    await waitFor(() => {
+      expect(api.createLogsFromDrive).toHaveBeenCalledWith(
+        {
+          persona_id: 1,
+          docs: [expect.objectContaining({ id: 'privateDoc987654', name: 'Bitácora Privada Google' })],
         },
         expect.objectContaining({ id: 'u-1' }),
       );

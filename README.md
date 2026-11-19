@@ -12,7 +12,7 @@ Plataforma web centralizada para la **Fundación CEMIPRE** (Viña del Mar) para 
 | Interfaz web | React 19 + Vite + CSS accesible | `frontend/` |
 | Base de datos y Auth | Supabase (PostgreSQL + RLS + Supabase Auth) | `supabase/schema.sql`, `supabase/migrations/` |
 | Lógica de servidor | Supabase Edge Functions (Deno TypeScript) | `supabase/functions/` |
-| Documentos colaborativos | Google Drive API + Google Docs API (Service Account) | `supabase/functions/_shared/google.ts` |
+| Documentos colaborativos | Google Drive API + Google Docs API (Google OAuth privado + Service Account opcional) | `supabase/functions/_shared/google.ts`, `google-drive-auth/`, `drive-browser/` |
 | Resúmenes IA | Gemini API o OpenAI API (con minimización previa) | `supabase/functions/resumen-usuario/` |
 | Notificaciones | Resend / Webhook + `pg_cron` o GitHub Actions | `supabase/functions/notificar-cambios/` |
 
@@ -101,6 +101,7 @@ npm run build    # Compila la versión de producción en frontend/dist/
    - `supabase/migrations/0004_cron_notificaciones.sql`
    - `supabase/migrations/0005_ux_favoritos_y_comentarios.sql`
    - `supabase/migrations/0006_jerarquia_admin_secreta.sql`
+   - `supabase/migrations/0007_google_oauth_y_autosync.sql` *(100% aditiva e idempotente; segura en bases de datos con datos existentes)*
    - *(Opcional solo en entorno de pruebas)* `supabase/seed.sql`
 2. En **Authentication → Providers**, activa **Email** y, si el equipo lo requiere, **Google** (configurando Redirect URL hacia tu dominio / `http://127.0.0.1:5173`).
 3. Registra la primera cuenta de administrador en la app y promuévela una sola vez desde SQL Editor:
@@ -119,8 +120,9 @@ Con Supabase CLI autenticado (`supabase login` y `supabase link --project-ref <R
 
 ```bash
 supabase secrets set \
-  GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}' \
-  GOOGLE_DRIVE_ROOT_FOLDER_ID='ID_CARPETA_RAIZ' \
+  GOOGLE_OAUTH_CLIENT_ID='TU_CLIENT_ID.apps.googleusercontent.com' \
+  GOOGLE_OAUTH_CLIENT_SECRET='GOCSPX-...' \
+  GOOGLE_TOKEN_ENCRYPTION_KEY='clave-aleatoria-larga-de-32-o-mas-caracteres' \
   AI_PROVIDER='gemini' \
   AI_API_KEY='TU_CLAVE_AI' \
   EMAIL_PROVIDER='resend' \
@@ -129,6 +131,8 @@ supabase secrets set \
   CRON_SECRET='secreto-largo-aleatorio' \
   APP_BASE_URL='https://tu-app.vercel.app'
 
+supabase functions deploy google-drive-auth
+supabase functions deploy drive-browser
 supabase functions deploy sync-drive
 supabase functions deploy resumen-usuario
 supabase functions deploy notificar-cambios

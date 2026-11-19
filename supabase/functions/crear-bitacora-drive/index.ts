@@ -3,13 +3,14 @@ import {
   createDriveItem,
   type DriveFileMeta,
   getFileMetadata,
-  getGoogleAccessToken,
   GOOGLE_WRITE_SCOPES,
   GoogleApiError,
   listFolderChildren,
   normalizeDocUrl,
   normalizeFolderId,
   parseFolderIdentity,
+  resolveDriveTokenCandidates,
+  withDriveTokenFallback,
 } from '../_shared/google.ts';
 import { AuthError, requireAuthorizedWorker } from '../_shared/supabase.ts';
 
@@ -184,8 +185,9 @@ async function createViaDriveApi(params: {
   userFolderId: string;
   persona: PersonaRow;
   bitacoraName: string;
+  writeToken: string;
 }): Promise<DriveCreationResult> {
-  const writeToken = await getGoogleAccessToken(GOOGLE_WRITE_SCOPES);
+  const { writeToken } = params;
 
   let targetUserFolderId = params.userFolderId;
   if (!targetUserFolderId) {
@@ -264,63 +266,108 @@ Deno.serve(async (req: Request) => {
     }
 
     const persona = personaData as PersonaRow;
-    const rootFolderId = normalizeFolderId(Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID') || '');
-    let userFolderId = normalizeFolderId(persona.drive_folder_id || '');
-    let readonlyToken = '';
+    const { data: syncState } = await adminClient
+      .from('drive_sync_state')
+      .select('root_folder_id')
+      .eq('id', 'global')
+      .maybeSingle();
 
-    // Intentar obtener token de lectura y resolver carpeta del usuario desde la raíz si aún no tiene ID
-    try {
-      readonlyToken = await getGoogleAccessToken();
-      if (!userFolderId && rootFolderId) {
-        const rootChildren = await listFolderChildren(rootFolderId, readonlyToken);
+    const rootFolderId = normalizeFolderId(
+      syncState?.root_folder_id || Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID') || '',
+    );
+    let userFolderId = normalizeFolderId(persona.drive_folder_id || '');
+
+    const { candidates, reconnectNeeded, lastAuthError } = await resolveDriveTokenCandidates(adminClient, {
+      userId,
+      preferInstitutional: false,
+      includeServiceAccount: true,
+      serviceAccountScopes: GOOGLE_WRITE_SCOPES,
+    });
+
+    const oauthCandidates = candidates.filter((c) => c.source !== 'service_account');
+    const serviceCandidates = candidates.filter((c) => c.source === 'service_account');
+
+    // Resolver carpeta del usuario desde la raíz si aún no tiene drive_folder_id
+    if (!userFolderId && rootFolderId && candidates.length > 0) {
+      try {
+        const { result: rootChildren } = await withDriveTokenFallback(
+          candidates,
+          (c) => listFolderChildren(rootFolderId, c.token),
+        );
         const folders = rootChildren.filter((item) => item.mimeType === MIME_FOLDER);
         const matched = findMatchingUserFolder(folders, persona);
         if (matched) {
           userFolderId = matched.id;
         }
+      } catch {
+        // Continuar hacia la creación
       }
-    } catch {
-      // Si la Service Account aún no puede leer o no existe carpeta previa, continúa al puente configurado
     }
 
     if (!userFolderId && !rootFolderId) {
       return errorResponse(
-        'Este usuario no tiene ID de carpeta en Drive y tampoco hay GOOGLE_DRIVE_ROOT_FOLDER_ID configurado en Supabase.',
+        'Este usuario no tiene carpeta en Drive y tampoco hay una carpeta raíz configurada en Carpetas Drive.',
         400,
       );
     }
 
     const webhookUrl = (Deno.env.get('GOOGLE_DRIVE_WEBHOOK_URL') || '').trim();
     const webhookSecret = (Deno.env.get('GOOGLE_DRIVE_WEBHOOK_SECRET') || '').trim();
-    if (webhookUrl && !webhookSecret) {
+    if (oauthCandidates.length === 0 && webhookUrl && !webhookSecret) {
       return errorResponse(
         'Falta configurar GOOGLE_DRIVE_WEBHOOK_SECRET junto con GOOGLE_DRIVE_WEBHOOK_URL en Supabase Secrets.',
         500,
       );
     }
 
-    const created = webhookUrl
-      ? await createViaAppsScript({
-          webhookUrl,
-          webhookSecret,
+    let created: DriveCreationResult;
+    if (oauthCandidates.length > 0) {
+      // Con cuenta Google OAuth real no aplica el límite de 0 GB de Service Accounts
+      const { result } = await withDriveTokenFallback(
+        oauthCandidates,
+        (c) => createViaDriveApi({
           rootFolderId,
           userFolderId,
           persona,
           bitacoraName: titulo,
-        })
-      : await createViaDriveApi({
-          rootFolderId,
-          userFolderId,
-          persona,
-          bitacoraName: titulo,
-        });
+          writeToken: c.token,
+        }),
+      );
+      created = result;
+    } else if (webhookUrl) {
+      created = await createViaAppsScript({
+        webhookUrl,
+        webhookSecret,
+        rootFolderId,
+        userFolderId,
+        persona,
+        bitacoraName: titulo,
+      });
+    } else if (serviceCandidates.length > 0) {
+      created = await createViaDriveApi({
+        rootFolderId,
+        userFolderId,
+        persona,
+        bitacoraName: titulo,
+        writeToken: serviceCandidates[0].token,
+      });
+    } else {
+      return errorResponse(
+        lastAuthError || 'Conecta tu cuenta de Google Drive para crear carpetas y bitácoras automáticamente.',
+        reconnectNeeded ? 401 : 400,
+        { code: reconnectNeeded ? 'reconexion_requerida' : 'configuracion' },
+      );
+    }
 
     const finalUserFolderId = created.userFolderId || userFolderId;
     const userFolderLinked = Boolean(finalUserFolderId && finalUserFolderId !== persona.drive_folder_id);
     if (userFolderLinked) {
       await adminClient
         .from('personas')
-        .update({ drive_folder_id: finalUserFolderId })
+        .update({
+          drive_folder_id: finalUserFolderId,
+          linked_by_user_id: userId,
+        })
         .eq('id', persona.id);
     }
 
@@ -330,9 +377,12 @@ Deno.serve(async (req: Request) => {
     let estadoSync = 'sincronizada';
     let warning: string | undefined;
 
-    if (readonlyToken) {
+    if (candidates.length > 0) {
       try {
-        const meta = await getFileMetadata(created.docId, readonlyToken);
+        const { result: meta } = await withDriveTokenFallback(
+          candidates,
+          (c) => getFileMetadata(created.docId, c.token),
+        );
         finalDocUrl = normalizeDocUrl(created.docId, meta.webViewLink || finalDocUrl);
         driveModifiedTime = meta.modifiedTime ?? driveModifiedTime;
         driveRevisionId = meta.headRevisionId ?? '';
@@ -340,7 +390,7 @@ Deno.serve(async (req: Request) => {
         if (err instanceof GoogleApiError && err.code === 'sin_permiso') {
           estadoSync = 'sin_permiso';
           warning =
-            'Se creó la bitácora en Drive, pero la Service Account no tiene permiso de lectura sobre la carpeta del usuario. Verifica que la carpeta esté dentro de la carpeta raíz compartida.';
+            'Se creó la bitácora en Drive, pero ninguna cuenta conectada pudo verificar sus permisos de lectura.';
         }
       }
     }
@@ -365,6 +415,7 @@ Deno.serve(async (req: Request) => {
         drive_modified_time: driveModifiedTime,
         drive_revision_id: driveRevisionId,
         estado_sync: estadoSync,
+        linked_by_user_id: userId,
       })
       .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync')
       .single();

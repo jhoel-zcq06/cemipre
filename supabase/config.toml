@@ -27,3 +27,9 @@ verify_jwt = false
 
 [functions.crear-bitacora-drive]
 verify_jwt = false
+
+[functions.google-drive-auth]
+verify_jwt = false
+
+[functions.drive-browser]
+verify_jwt = false

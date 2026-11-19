@@ -25,7 +25,8 @@ Manual práctico para trabajadores, profesionales y administradores de la **Fund
 - **Calendario:** Agenda compartida del equipo para crear, editar y eliminar reuniones o actividades (horario oficial de Chile).
 - **Actividad:** Registro cronológico de qué trabajador creó, editó o sincronizó elementos dentro de la plataforma.
 - **Avisos:** Historial de notificaciones por correo enviadas cuando alguien edita un Google Doc en Google Drive. Puedes activar o silenciar tus avisos haciendo clic en tu nombre arriba a la derecha (**Mi perfil y notificaciones**).
-- **Carpetas Drive:** Permite ejecutar manualmente una sincronización inmediata con Google Drive para detectar documentos nuevos, renombres o archivos sin permiso de lectura.
+- **Carpetas Drive:** Muestra el estado de la **sincronización automática** (cada 5 minutos y en vivo al vincular fichas), permite conectar tu cuenta de Google Drive para acceder a carpetas y bitácoras privadas sin hacer enlaces públicos, y a los administradores elegir la carpeta raíz directamente desde Google Drive.
+- **Selector directo de Drive:** Desde cualquier ficha de usuario puedes pulsar **☁ Elegir de Drive** (o *Seleccionar desde Google Drive* dentro de los formularios) para elegir carpetas o varias bitácoras privadas directamente desde *Mi unidad*, *Compartidos conmigo* o *Unidades compartidas*.
 - **Administración (solo rol `admin`):** Permite aprobar cuentas nuevas (`pendiente` → `trabajador` o `admin`) y gestionar la lista blanca automática de correos.
 
 ## 3. Accesibilidad por teclado y lector de pantalla

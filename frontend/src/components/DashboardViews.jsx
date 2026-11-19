@@ -6,12 +6,18 @@ export function InicioView({
   recentActivity,
   events,
   syncState,
+  driveStatus = null,
   onNavigate,
   onOpenUser,
+  onConnectGoogleDrive,
 }) {
   const upcomingEvents = events
     .filter((ev) => new Date(ev.fin).getTime() >= Date.now())
     .slice(0, 4);
+
+  const autoSyncActive = syncState?.auto_sync_enabled !== false;
+  const needsReconnect = syncState?.connection_status === 'requiere_reconexion'
+    || driveStatus?.institucional?.status === 'requiere_reconexion';
 
   return (
     <div className="dashboard-stack">
@@ -54,8 +60,8 @@ export function InicioView({
               <span>Síntesis automática desde los Google Docs reales del usuario.</span>
             </button>
             <button type="button" className="quick-card" onClick={() => onNavigate('drive')}>
-              <strong>Sincronizar carpetas Drive</strong>
-              <span>Detectar nuevos Docs, renombres o archivos sin permisos.</span>
+              <strong>Google Drive automático</strong>
+              <span>Conexión Google privada, carpeta raíz y estado de sincronización automática.</span>
             </button>
             <button type="button" className="quick-card" onClick={() => onNavigate('calendario')}>
               <strong>Revisar calendario</strong>
@@ -66,19 +72,47 @@ export function InicioView({
 
         <section className="panel padded-panel" aria-label="Estado de sincronización con Google Drive">
           <div className="panel-heading-inline">
-            <h2>Integración Google Drive</h2>
+            <h2>Google Drive automático</h2>
             <button type="button" className="btn btn-tiny" onClick={() => onNavigate('drive')}>
-              Ir a Drive
+              Configurar Drive
             </button>
           </div>
-          {syncState?.ultima_sincronizacion ? (
+          {needsReconnect ? (
+            <Notice kind="warn">
+              La conexión de Google Drive requiere reconexión para mantener la sincronización automática.{' '}
+              {onConnectGoogleDrive && (
+                <button
+                  type="button"
+                  className="inline-button"
+                  onClick={() => onConnectGoogleDrive({ set_institutional: false })}
+                >
+                  Reconectar ahora
+                </button>
+              )}
+            </Notice>
+          ) : syncState?.ultima_sincronizacion ? (
             <div className="sync-summary-box">
-              <p><strong>Última sincronización:</strong> {formatDateTime(syncState.ultima_sincronizacion)}</p>
+              <div className="panel-heading-inline">
+                <strong>
+                  {autoSyncActive ? 'Sincronización automática activa' : 'Sincronización automática pausada'}
+                </strong>
+                <span className={`status-badge ${autoSyncActive ? 'badge-ok' : 'badge-warn'}`}>
+                  {autoSyncActive ? `● Cada ${syncState.auto_sync_interval_min || 5} min` : '○ Pausada'}
+                </span>
+              </div>
+              <p><strong>Última revisión:</strong> {formatDateTime(syncState.ultima_sincronizacion)}</p>
+              {(syncState.root_folder_name || syncState.institutional_email) && (
+                <p className="muted">
+                  {syncState.institutional_email ? `Cuenta: ${syncState.institutional_email}` : ''}
+                  {syncState.institutional_email && syncState.root_folder_name ? ' · ' : ''}
+                  {syncState.root_folder_name ? `Carpeta raíz: ${syncState.root_folder_name}` : ''}
+                </p>
+              )}
               <p className="muted">{syncState.ultimo_estado || 'Estado operativo.'}</p>
             </div>
           ) : (
             <Notice kind="info">
-              Aún no se ha ejecutado una sincronización con Google Drive desde esta instancia.
+              Conecta tu cuenta Google en <strong>Carpetas Drive</strong> para activar la sincronización automática sin enlaces públicos.
             </Notice>
           )}
 

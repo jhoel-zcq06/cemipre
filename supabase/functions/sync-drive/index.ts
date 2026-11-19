@@ -1,17 +1,20 @@
 import { corsHeaders, errorResponse, jsonResponse } from '../_shared/cors.ts';
+import { timingSafeEqual } from '../_shared/crypto.ts';
 import {
   type DriveFileMeta,
-  exportDocAsText,
   getFileMetadata,
-  getGoogleAccessToken,
   getStartPageToken,
+  getUserDriveToken,
   GoogleApiError,
   listFolderChildren,
   normalizeDocUrl,
   normalizeFolderId,
   parseFolderIdentity,
+  type ResolvedDriveToken,
+  resolveDriveTokenCandidates,
+  withDriveTokenFallback,
 } from '../_shared/google.ts';
-import { AuthError, requireAuthorizedWorker } from '../_shared/supabase.ts';
+import { AuthError, getSupabaseAdmin, requireAuthorizedWorker } from '../_shared/supabase.ts';
 
 const MIME_FOLDER = 'application/vnd.google-apps.folder';
 const MIME_DOC = 'application/vnd.google-apps.document';
@@ -22,6 +25,9 @@ interface SyncRequestBody {
   root_folder_id?: string;
   sync_titles?: boolean;
   crear_faltantes?: boolean;
+  auto?: boolean;
+  origen?: string;
+  cooldown_seconds?: number;
 }
 
 interface PersonaRow {
@@ -29,6 +35,8 @@ interface PersonaRow {
   codigo: string;
   nombre: string;
   drive_folder_id: string;
+  drive_folder_name?: string;
+  linked_by_user_id?: string | null;
 }
 
 interface BitacoraRow {
@@ -41,9 +49,12 @@ interface BitacoraRow {
   drive_modified_time: string | null;
   drive_revision_id: string;
   estado_sync: string;
+  linked_by_user_id?: string | null;
 }
 
-function resolveDocTarget(item: DriveFileMeta): { id: string; name: string; webViewLink?: string; modifiedTime?: string; headRevisionId?: string } | null {
+function resolveDocTarget(
+  item: DriveFileMeta,
+): { id: string; name: string; webViewLink?: string; modifiedTime?: string; headRevisionId?: string } | null {
   if (item.mimeType === MIME_DOC) {
     return {
       id: item.id,
@@ -53,7 +64,11 @@ function resolveDocTarget(item: DriveFileMeta): { id: string; name: string; webV
       headRevisionId: item.headRevisionId,
     };
   }
-  if (item.mimeType === MIME_SHORTCUT && item.shortcutDetails?.targetMimeType === MIME_DOC && item.shortcutDetails?.targetId) {
+  if (
+    item.mimeType === MIME_SHORTCUT
+    && item.shortcutDetails?.targetMimeType === MIME_DOC
+    && item.shortcutDetails?.targetId
+  ) {
     return {
       id: item.shortcutDetails.targetId,
       name: item.name,
@@ -113,6 +128,23 @@ async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T) => P
   return results;
 }
 
+function isCronRequestAuthorized(req: Request): { isCronAttempt: boolean; valid: boolean } {
+  const cronSecret = (Deno.env.get('CRON_SECRET') || '').trim();
+  const headerSecret = (req.headers.get('x-cron-secret') || '').trim();
+  if (headerSecret) {
+    return {
+      isCronAttempt: true,
+      valid: Boolean(cronSecret && timingSafeEqual(headerSecret, cronSecret)),
+    };
+  }
+  const authHeader = (req.headers.get('Authorization') || '').trim();
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (cronSecret && bearer && timingSafeEqual(bearer, cronSecret)) {
+    return { isCronAttempt: true, valid: true };
+  }
+  return { isCronAttempt: false, valid: false };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -121,9 +153,10 @@ Deno.serve(async (req: Request) => {
     return errorResponse('Método no permitido. Usa POST.', 405);
   }
 
-  try {
-    const { userId, perfil, adminClient } = await requireAuthorizedWorker(req);
+  let lockAcquired = false;
+  let adminClientForUnlock: ReturnType<typeof getSupabaseAdmin> | null = null;
 
+  try {
     let body: SyncRequestBody = {};
     try {
       const text = await req.text();
@@ -132,12 +165,133 @@ Deno.serve(async (req: Request) => {
       return errorResponse('Cuerpo JSON inválido.');
     }
 
-    const token = await getGoogleAccessToken();
-    const rawRootFolder = (body.root_folder_id || Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID') || '').trim();
+    const cronCheck = isCronRequestAuthorized(req);
+    if (cronCheck.isCronAttempt && !cronCheck.valid) {
+      return errorResponse('No autorizado: CRON_SECRET inválido.', 401);
+    }
+
+    let isCron = false;
+    let userId: string | null = null;
+    let actorNombre = 'Sincronización automática';
+    let adminClient: ReturnType<typeof getSupabaseAdmin>;
+
+    if (cronCheck.valid) {
+      isCron = true;
+      adminClient = getSupabaseAdmin();
+    } else {
+      const auth = await requireAuthorizedWorker(req);
+      userId = auth.userId;
+      actorNombre = auth.perfil.nombre || auth.perfil.email;
+      adminClient = auth.adminClient;
+    }
+    adminClientForUnlock = adminClient;
+
+    const isAutoMode = isCron || Boolean(body.auto);
+    const isGlobalSync = typeof body.persona_id !== 'number';
+
+    // Leer estado global actual
+    const { data: syncState } = await adminClient
+      .from('drive_sync_state')
+      .select('start_page_token, root_folder_id, auto_sync_enabled, auto_sync_interval_min')
+      .eq('id', 'global')
+      .maybeSingle();
+
+    if (isAutoMode && isGlobalSync && syncState && syncState.auto_sync_enabled === false) {
+      return jsonResponse({
+        ok: true,
+        skipped: true,
+        reason: 'auto_sync_desactivado',
+      });
+    }
+
+    // Adquirir candado atómico para evitar carreras entre cron y múltiples pestañas
+    if (isGlobalSync) {
+      const defaultCooldown = isCron
+        ? 25
+        : Math.max(60, Number(syncState?.auto_sync_interval_min ?? 5) * 60 - 30);
+      const cooldownSeconds = isAutoMode
+        ? (typeof body.cooldown_seconds === 'number' ? Math.max(0, body.cooldown_seconds) : defaultCooldown)
+        : 0;
+
+      const { data: lockData } = await adminClient.rpc('srv_acquire_drive_sync_lock', {
+        p_lock_seconds: 120,
+        p_cooldown_seconds: cooldownSeconds,
+      });
+      const lock = (lockData ?? { acquired: true }) as {
+        acquired?: boolean;
+        reason?: string;
+        ultima_sincronizacion?: string | null;
+      };
+      if (!lock.acquired) {
+        return jsonResponse({
+          ok: true,
+          skipped: true,
+          reason: lock.reason || 'en_curso',
+          ultima_sincronizacion: lock.ultima_sincronizacion || null,
+        });
+      }
+      lockAcquired = true;
+    }
+
+    // Resolver credenciales Google (OAuth institucional / usuario -> Service Account opcional)
+    const { candidates: baseCandidates, reconnectNeeded, lastAuthError } = await resolveDriveTokenCandidates(
+      adminClient,
+      {
+        userId,
+        preferInstitutional: isCron || isGlobalSync,
+        includeServiceAccount: true,
+      },
+    );
+
+    if (baseCandidates.length === 0) {
+      if (isAutoMode) {
+        return jsonResponse({
+          ok: true,
+          skipped: true,
+          reason: reconnectNeeded ? 'requiere_reconexion' : 'sin_credenciales_drive',
+          message: lastAuthError || 'No hay cuenta Google Drive conectada todavía.',
+        });
+      }
+      return errorResponse(
+        lastAuthError || 'Conecta una cuenta de Google Drive (o configura una Service Account) para sincronizar.',
+        reconnectNeeded ? 401 : 400,
+        { code: reconnectNeeded ? 'reconexion_requerida' : 'configuracion' },
+      );
+    }
+
+    const primaryToken = baseCandidates[0];
+    const ownerTokenCache = new Map<string, ResolvedDriveToken | null>();
+    for (const c of baseCandidates) {
+      if (c.userId) ownerTokenCache.set(c.userId, c);
+    }
+
+    const getCandidatesForOwner = async (ownerId?: string | null): Promise<ResolvedDriveToken[]> => {
+      if (!ownerId) return baseCandidates;
+      if (baseCandidates.some((c) => c.userId === ownerId)) return baseCandidates;
+
+      if (!ownerTokenCache.has(ownerId)) {
+        try {
+          const resolved = await getUserDriveToken(adminClient, ownerId);
+          ownerTokenCache.set(ownerId, resolved);
+        } catch {
+          ownerTokenCache.set(ownerId, null);
+        }
+      }
+      const ownerToken = ownerTokenCache.get(ownerId);
+      return ownerToken ? [...baseCandidates, ownerToken] : baseCandidates;
+    };
+
+    const rawRootFolder = (
+      body.root_folder_id
+      || syncState?.root_folder_id
+      || Deno.env.get('GOOGLE_DRIVE_ROOT_FOLDER_ID')
+      || ''
+    ).trim();
     const rootFolderId = rawRootFolder ? normalizeFolderId(rawRootFolder) : '';
     if (rawRootFolder && !rootFolderId) {
       return errorResponse('El ID o enlace de la carpeta raíz en Google Drive no es válido.');
     }
+
     const syncTitles = body.sync_titles !== false;
     const crearFaltantes = body.crear_faltantes !== false;
 
@@ -150,13 +304,14 @@ Deno.serve(async (req: Request) => {
       renombres_detectados: 0,
       errores_permisos: 0,
       no_encontradas: 0,
+      auth_source: primaryToken.source,
       detalles: [] as Array<{ tipo: string; mensaje: string }>,
     };
 
     // Cargar personas objetivo
     let personasQuery = adminClient
       .from('personas')
-      .select('id, codigo, nombre, drive_folder_id')
+      .select('id, codigo, nombre, drive_folder_id, drive_folder_name, linked_by_user_id')
       .order('codigo');
 
     if (typeof body.persona_id === 'number') {
@@ -174,8 +329,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // Paso 1: Si hay carpeta raíz configurada, detectar carpetas de personas en Drive
-    if (rootFolderId && typeof body.persona_id !== 'number') {
-      const rootItems = await listFolderChildren(rootFolderId, token);
+    if (rootFolderId && isGlobalSync) {
+      const { result: rootItems } = await withDriveTokenFallback(
+        baseCandidates,
+        (c) => listFolderChildren(rootFolderId, c.token),
+      );
       const driveFolders = rootItems.filter((item) => item.mimeType === MIME_FOLDER);
 
       for (const folder of driveFolders) {
@@ -183,18 +341,25 @@ Deno.serve(async (req: Request) => {
         const matched = personas.find((p) => normalizeFolderId(p.drive_folder_id) === folder.id)
           || personas.find((p) => p.codigo.toUpperCase() === parsed.codigo.toUpperCase());
 
-        if (matched && matched.drive_folder_id !== folder.id) {
+        if (matched && (matched.drive_folder_id !== folder.id || matched.drive_folder_name !== folder.name)) {
           const { error: updErr } = await adminClient
             .from('personas')
-            .update({ drive_folder_id: folder.id })
+            .update({
+              drive_folder_id: folder.id,
+              drive_folder_name: folder.name.slice(0, 160),
+            })
             .eq('id', matched.id);
           if (!updErr) {
+            const changedId = matched.drive_folder_id !== folder.id;
             matched.drive_folder_id = folder.id;
-            report.carpetas_vinculadas++;
-            report.detalles.push({
-              tipo: 'carpeta_vinculada',
-              mensaje: `${matched.codigo} vinculada a carpeta "${folder.name}".`,
-            });
+            matched.drive_folder_name = folder.name;
+            if (changedId) {
+              report.carpetas_vinculadas++;
+              report.detalles.push({
+                tipo: 'carpeta_vinculada',
+                mensaje: `${matched.codigo} vinculada a carpeta "${folder.name}".`,
+              });
+            }
           }
         } else if (!matched && crearFaltantes) {
           const { data: created, error: createErr } = await adminClient
@@ -203,8 +368,10 @@ Deno.serve(async (req: Request) => {
               codigo: parsed.codigo,
               nombre: parsed.nombre,
               drive_folder_id: folder.id,
+              drive_folder_name: folder.name.slice(0, 160),
+              linked_by_user_id: primaryToken.userId ?? userId,
             })
-            .select('id, codigo, nombre, drive_folder_id')
+            .select('id, codigo, nombre, drive_folder_id, drive_folder_name, linked_by_user_id')
             .single();
 
           if (!createErr && created) {
@@ -227,14 +394,23 @@ Deno.serve(async (req: Request) => {
       }))
       .filter((entry) => entry.folderId !== '');
     const syncedDocIdsInStep2 = new Set<string>();
+    const personaOwnerById = new Map<number, string | null>();
+    for (const p of personas) {
+      personaOwnerById.set(p.id, p.linked_by_user_id ?? null);
+    }
     report.personas_procesadas = personas.length;
 
     for (const { persona, folderId } of personasConCarpeta) {
       try {
-        const docsEnDrive = await collectDocsInPersonaFolder(folderId, token);
+        const folderCandidates = await getCandidatesForOwner(persona.linked_by_user_id);
+        const { result: docsEnDrive } = await withDriveTokenFallback(
+          folderCandidates,
+          (c) => collectDocsInPersonaFolder(folderId, c.token),
+        );
+
         const { data: existingLogs } = await adminClient
           .from('bitacoras')
-          .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync')
+          .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync, linked_by_user_id')
           .eq('persona_id', persona.id)
           .order('orden', { ascending: true });
 
@@ -253,23 +429,32 @@ Deno.serve(async (req: Request) => {
 
           if (target) {
             const titleChanged = byId && syncTitles && normalizedTitle && target.titulo !== normalizedTitle;
-            const updatePayload: Record<string, unknown> = {
-              url_docs: docUrl,
-              google_doc_id: doc.id,
-              estado_sync: 'sincronizada',
-              drive_modified_time: doc.modifiedTime ?? target.drive_modified_time,
-              drive_revision_id: doc.headRevisionId ?? target.drive_revision_id,
-            };
-            if (titleChanged) {
-              updatePayload.titulo = normalizedTitle;
-              report.renombres_detectados++;
-              report.detalles.push({
-                tipo: 'renombre',
-                mensaje: `${persona.codigo}: "${target.titulo}" renombrada a "${normalizedTitle}".`,
-              });
+            const metaChanged = target.url_docs !== docUrl
+              || target.google_doc_id !== doc.id
+              || target.estado_sync !== 'sincronizada'
+              || (doc.modifiedTime && doc.modifiedTime !== target.drive_modified_time)
+              || (doc.headRevisionId && doc.headRevisionId !== target.drive_revision_id)
+              || titleChanged;
+
+            if (metaChanged) {
+              const updatePayload: Record<string, unknown> = {
+                url_docs: docUrl,
+                google_doc_id: doc.id,
+                estado_sync: 'sincronizada',
+                drive_modified_time: doc.modifiedTime ?? target.drive_modified_time,
+                drive_revision_id: doc.headRevisionId ?? target.drive_revision_id,
+              };
+              if (titleChanged) {
+                updatePayload.titulo = normalizedTitle;
+                report.renombres_detectados++;
+                report.detalles.push({
+                  tipo: 'renombre',
+                  mensaje: `${persona.codigo}: "${target.titulo}" renombrada a "${normalizedTitle}".`,
+                });
+              }
+              await adminClient.from('bitacoras').update(updatePayload).eq('id', target.id);
+              target.google_doc_id = doc.id;
             }
-            await adminClient.from('bitacoras').update(updatePayload).eq('id', target.id);
-            target.google_doc_id = doc.id;
             report.bitacoras_actualizadas++;
           } else {
             const { data: inserted } = await adminClient
@@ -283,8 +468,9 @@ Deno.serve(async (req: Request) => {
                 drive_modified_time: doc.modifiedTime ?? null,
                 drive_revision_id: doc.headRevisionId ?? '',
                 estado_sync: 'sincronizada',
+                linked_by_user_id: persona.linked_by_user_id ?? primaryToken.userId ?? userId,
               })
-              .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync')
+              .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync, linked_by_user_id')
               .single();
 
             if (inserted) {
@@ -316,7 +502,7 @@ Deno.serve(async (req: Request) => {
     // Paso 3: Verificar metadatos y permisos de bitácoras ya vinculadas por google_doc_id
     let logsQuery = adminClient
       .from('bitacoras')
-      .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync');
+      .select('id, persona_id, titulo, url_docs, google_doc_id, orden, drive_modified_time, drive_revision_id, estado_sync, linked_by_user_id');
 
     if (typeof body.persona_id === 'number') {
       logsQuery = logsQuery.eq('persona_id', body.persona_id);
@@ -338,13 +524,21 @@ Deno.serve(async (req: Request) => {
 
     await mapPool(linkedLogs, 4, async (b) => {
       try {
-        const meta = await getFileMetadata(b.google_doc_id, token);
+        const ownerId = b.linked_by_user_id || personaOwnerById.get(b.persona_id) || null;
+        const docCandidates = await getCandidatesForOwner(ownerId);
+        const { result: meta } = await withDriveTokenFallback(
+          docCandidates,
+          (c) => getFileMetadata(b.google_doc_id, c.token),
+        );
+
         if (meta.trashed) {
           report.no_encontradas++;
-          await adminClient
-            .from('bitacoras')
-            .update({ estado_sync: 'no_encontrada' })
-            .eq('id', b.id);
+          if (b.estado_sync !== 'no_encontrada') {
+            await adminClient
+              .from('bitacoras')
+              .update({ estado_sync: 'no_encontrada' })
+              .eq('id', b.id);
+          }
           report.detalles.push({
             tipo: 'papelera',
             mensaje: `"${b.titulo}" está en la papelera de Google Drive.`,
@@ -352,20 +546,28 @@ Deno.serve(async (req: Request) => {
           return;
         }
 
-        const updatePayload: Record<string, unknown> = {
-          estado_sync: 'sincronizada',
-          drive_modified_time: meta.modifiedTime ?? b.drive_modified_time,
-          drive_revision_id: meta.headRevisionId ?? b.drive_revision_id,
-        };
-        if (syncTitles && meta.name && meta.name.trim() !== b.titulo.trim()) {
-          updatePayload.titulo = meta.name.trim().slice(0, 160);
-          report.renombres_detectados++;
-          report.detalles.push({
-            tipo: 'renombre',
-            mensaje: `"${b.titulo}" fue renombrada en Drive a "${meta.name.trim()}".`,
-          });
+        const renamed = Boolean(syncTitles && meta.name && meta.name.trim() !== b.titulo.trim());
+        const metaChanged = b.estado_sync !== 'sincronizada'
+          || (meta.modifiedTime && meta.modifiedTime !== b.drive_modified_time)
+          || (meta.headRevisionId && meta.headRevisionId !== b.drive_revision_id)
+          || renamed;
+
+        if (metaChanged) {
+          const updatePayload: Record<string, unknown> = {
+            estado_sync: 'sincronizada',
+            drive_modified_time: meta.modifiedTime ?? b.drive_modified_time,
+            drive_revision_id: meta.headRevisionId ?? b.drive_revision_id,
+          };
+          if (renamed && meta.name) {
+            updatePayload.titulo = meta.name.trim().slice(0, 160);
+            report.renombres_detectados++;
+            report.detalles.push({
+              tipo: 'renombre',
+              mensaje: `"${b.titulo}" fue renombrada en Drive a "${meta.name.trim()}".`,
+            });
+          }
+          await adminClient.from('bitacoras').update(updatePayload).eq('id', b.id);
         }
-        await adminClient.from('bitacoras').update(updatePayload).eq('id', b.id);
         report.bitacoras_actualizadas++;
       } catch (err) {
         if (err instanceof GoogleApiError && err.code === 'sin_permiso') {
@@ -391,38 +593,75 @@ Deno.serve(async (req: Request) => {
       }
     });
 
-    // Asegurar que exista un start_page_token inicial para futuras notificaciones automáticas
-    const { data: syncState } = await adminClient
-      .from('drive_sync_state')
-      .select('start_page_token')
-      .eq('id', 'global')
-      .maybeSingle();
-
-    let nextStartToken = syncState?.start_page_token ?? '';
+    // Asegurar start_page_token inicial sin pisar el cursor existente de notificar-cambios
+    let nextStartToken = (syncState?.start_page_token || '').trim();
     if (!nextStartToken) {
-      nextStartToken = await getStartPageToken(token);
+      try {
+        nextStartToken = await getStartPageToken(primaryToken.token);
+      } catch {
+        // continuar sin romper la sincronización si no se pudo inicializar el cursor
+      }
     }
 
-    const estadoTexto = `Sincronización completada: ${report.bitacoras_actualizadas} actualizadas, ${report.nuevas_bitacoras} nuevas, ${report.errores_permisos} sin permiso.`;
-    await adminClient.from('drive_sync_state').upsert({
+    const nowIso = new Date().toISOString();
+    const totalNovedades = report.carpetas_vinculadas
+      + report.nuevas_personas
+      + report.nuevas_bitacoras
+      + report.renombres_detectados;
+
+    const prefijoModo = isAutoMode ? 'Sincronización automática' : 'Sincronización verificada';
+    const estadoTexto = `${prefijoModo}: ${report.bitacoras_actualizadas} bitácoras al día, ${report.nuevas_bitacoras} nuevas, ${report.errores_permisos} sin permiso.`;
+
+    const authMode = primaryToken.source === 'service_account'
+      ? 'service_account'
+      : 'oauth_institucional';
+
+    const stateUpsert: Record<string, unknown> = {
       id: 'global',
       start_page_token: nextStartToken,
-      ultima_sincronizacion: new Date().toISOString(),
+      ultima_sincronizacion: nowIso,
       ultimo_estado: estadoTexto,
-      actualizado: new Date().toISOString(),
+      actualizado: nowIso,
+    };
+    if (isGlobalSync) {
+      stateUpsert.auth_mode = authMode;
+      stateUpsert.connection_status = reconnectNeeded && primaryToken.source === 'service_account'
+        ? 'requiere_reconexion'
+        : 'conectado';
+      if (primaryToken.source !== 'service_account' && primaryToken.email) {
+        stateUpsert.institutional_email = primaryToken.email;
+      }
+    }
+
+    await adminClient.from('drive_sync_state').upsert(stateUpsert);
+
+    // En modo automático, registrar en Actividad solo cuando realmente se detectaron novedades o alertas
+    const shouldLogActivity = !isAutoMode
+      || totalNovedades > 0
+      || report.errores_permisos > 0
+      || report.no_encontradas > 0;
+
+    if (shouldLogActivity) {
+      const desc = isAutoMode
+        ? `Sincronización automática de Drive: ${report.nuevas_personas} usuarios nuevos, ${report.nuevas_bitacoras} bitácoras nuevas, ${report.renombres_detectados} renombres.`
+        : `Sincronización con Drive ejecutada (${report.bitacoras_actualizadas} bitácoras verificadas, ${report.nuevas_bitacoras} nuevas).`;
+
+      await adminClient.from('actividad').insert({
+        descripcion: desc.slice(0, 250),
+        persona_id: typeof body.persona_id === 'number' ? body.persona_id : null,
+        actor_id: userId,
+        actor_nombre: isAutoMode ? 'Sincronización automática' : actorNombre,
+      });
+    }
+
+    return jsonResponse({
+      ok: true,
+      skipped: false,
+      auto: isAutoMode,
+      hubo_cambios: totalNovedades > 0,
+      ...report,
+      ultima_sincronizacion: nowIso,
     });
-
-    await adminClient.from('actividad').insert({
-      descripcion: `Sincronización con Drive ejecutada (${report.bitacoras_actualizadas} bitácoras verificadas, ${report.nuevas_bitacoras} nuevas).`,
-      persona_id: typeof body.persona_id === 'number' ? body.persona_id : null,
-      actor_id: userId,
-      actor_nombre: perfil.nombre || perfil.email,
-    });
-
-    // Nota: exportDocAsText se importa para validar lectura si se amplía el comando
-    void exportDocAsText;
-
-    return jsonResponse({ ok: true, ...report, ultima_sincronizacion: new Date().toISOString() });
   } catch (err) {
     if (err instanceof AuthError) {
       return errorResponse(err.message, err.status);
@@ -433,5 +672,13 @@ Deno.serve(async (req: Request) => {
       });
     }
     return errorResponse(`Error inesperado en sync-drive: ${(err as Error).message}`, 500);
+  } finally {
+    if (lockAcquired && adminClientForUnlock) {
+      try {
+        await adminClientForUnlock.rpc('srv_release_drive_sync_lock');
+      } catch {
+        // best-effort unlock (el lock también expira automáticamente por sync_lock_until)
+      }
+    }
   }
 });

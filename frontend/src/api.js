@@ -21,6 +21,32 @@ export const supabase = isSupabaseConfigured
     })
   : null;
 
+export const GOOGLE_DRIVE_OAUTH_SCOPES = 'https://www.googleapis.com/auth/drive';
+
+export function buildGoogleOAuthOptions({ withDrive = true, redirectTo = '' } = {}) {
+  const options = {
+    redirectTo: redirectTo || (typeof window !== 'undefined' ? window.location.origin : ''),
+  };
+  if (withDrive) {
+    options.scopes = GOOGLE_DRIVE_OAUTH_SCOPES;
+    options.queryParams = {
+      access_type: 'offline',
+      prompt: 'select_account',
+    };
+  }
+  return options;
+}
+
+export function isDriveSyncStale(syncState, maxAgeMinutes = 4) {
+  if (!syncState || syncState.auto_sync_enabled === false) return false;
+  if (syncState.sync_en_curso) return false;
+  if (!syncState.ultima_sincronizacion) return true;
+  const lastMs = new Date(syncState.ultima_sincronizacion).getTime();
+  if (Number.isNaN(lastMs)) return true;
+  const intervalMin = Math.max(2, Number(syncState.auto_sync_interval_min || maxAgeMinutes));
+  return Date.now() - lastMs >= intervalMin * 60_000;
+}
+
 const DOC_PATH_REGEX = /^\/document\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]{10,120})(?:\/|$)/;
 
 /**
@@ -358,13 +384,11 @@ export const api = {
     return data;
   },
 
-  async signInWithGoogle() {
+  async signInWithGoogle({ withDrive = true } = {}) {
     const client = requireClient();
     const { data, error } = await client.auth.signInWithOAuth({
       provider: 'google',
-      options: {
-        redirectTo: window.location.origin,
-      },
+      options: buildGoogleOAuthOptions({ withDrive }),
     });
     if (error) throw new Error(await formatApiError(error, 'No se pudo iniciar con Google.'));
     return data;
@@ -494,7 +518,7 @@ export const api = {
 
     let query = client
       .from('personas')
-      .select('id, codigo, nombre, creado, drive_folder_id, bitacoras(count)', { count: 'exact' })
+      .select('id, codigo, nombre, creado, drive_folder_id, drive_folder_name, bitacoras(count)', { count: 'exact' })
       .order('codigo', { ascending: true })
       .range(from, to);
 
@@ -517,6 +541,7 @@ export const api = {
       nombre: p.nombre,
       creado: p.creado,
       drive_folder_id: p.drive_folder_id || '',
+      drive_folder_name: p.drive_folder_name || '',
       total_bitacoras: p.bitacoras?.[0]?.count ?? 0,
     }));
 
@@ -533,7 +558,7 @@ export const api = {
     const client = requireClient();
     const { data, error } = await client
       .from('personas')
-      .select('id, codigo, nombre, creado, drive_folder_id, bitacoras(id, persona_id, titulo, url_docs, google_doc_id, orden, actualizada, drive_modified_time, estado_sync)')
+      .select('id, codigo, nombre, creado, drive_folder_id, drive_folder_name, bitacoras(id, persona_id, titulo, url_docs, google_doc_id, orden, actualizada, drive_modified_time, estado_sync)')
       .eq('id', id)
       .order('orden', { referencedTable: 'bitacoras', ascending: true })
       .order('id', { referencedTable: 'bitacoras', ascending: true })
@@ -542,7 +567,7 @@ export const api = {
     return data;
   },
 
-  async createUser({ codigo, nombre, drive_folder_id = '' }, actor) {
+  async createUser({ codigo, nombre, drive_folder_id = '', drive_folder_name = '' }, actor) {
     const client = requireClient();
     const checkCodigo = validateTextLength(codigo, 32, 'El código');
     if (!checkCodigo.valid) throw new Error(checkCodigo.error);
@@ -551,14 +576,20 @@ export const api = {
     const checkFolder = validateDriveFolderInput(drive_folder_id);
     if (!checkFolder.valid) throw new Error(checkFolder.error);
 
+    const cleanFolderName = checkFolder.folderId
+      ? String(drive_folder_name || '').trim().slice(0, 160)
+      : '';
+
     const { data, error } = await client
       .from('personas')
       .insert({
         codigo: checkCodigo.value.toUpperCase(),
         nombre: checkNombre.value,
         drive_folder_id: checkFolder.folderId,
+        drive_folder_name: cleanFolderName,
+        linked_by_user_id: checkFolder.folderId ? (actor?.id ?? null) : null,
       })
-      .select('id, codigo, nombre, drive_folder_id')
+      .select('id, codigo, nombre, drive_folder_id, drive_folder_name')
       .single();
     if (error) throw new Error(await formatApiError(error));
     await recordActivity(`Se creó el registro ${data.codigo} (${data.nombre}).`, {
@@ -568,7 +599,7 @@ export const api = {
     return data;
   },
 
-  async updateUser(id, { codigo, nombre, drive_folder_id = '' }, actor) {
+  async updateUser(id, { codigo, nombre, drive_folder_id = '', drive_folder_name = '' }, actor) {
     const client = requireClient();
     const checkCodigo = validateTextLength(codigo, 32, 'El código');
     if (!checkCodigo.valid) throw new Error(checkCodigo.error);
@@ -577,15 +608,21 @@ export const api = {
     const checkFolder = validateDriveFolderInput(drive_folder_id);
     if (!checkFolder.valid) throw new Error(checkFolder.error);
 
+    const cleanFolderName = checkFolder.folderId
+      ? String(drive_folder_name || '').trim().slice(0, 160)
+      : '';
+
     const { data, error } = await client
       .from('personas')
       .update({
         codigo: checkCodigo.value.toUpperCase(),
         nombre: checkNombre.value,
         drive_folder_id: checkFolder.folderId,
+        drive_folder_name: cleanFolderName,
+        ...(checkFolder.folderId && actor?.id ? { linked_by_user_id: actor.id } : {}),
       })
       .eq('id', id)
-      .select('id, codigo, nombre, drive_folder_id')
+      .select('id, codigo, nombre, drive_folder_id, drive_folder_name')
       .single();
     if (error) throw new Error(await formatApiError(error));
     await recordActivity(`Se actualizaron los datos de ${data.codigo}.`, {
@@ -664,6 +701,7 @@ export const api = {
         google_doc_id: checkLink.googleDocId,
         estado_sync: checkLink.googleDocId ? 'pendiente' : 'sin_enlace',
         orden: count ?? 0,
+        linked_by_user_id: checkLink.googleDocId ? (actor?.id ?? null) : null,
       })
       .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, estado_sync')
       .single();
@@ -675,6 +713,70 @@ export const api = {
       actor,
     });
     return data;
+  },
+
+  async createLogsFromDrive({ persona_id, docs }, actor) {
+    const client = requireClient();
+    if (!Array.isArray(docs) || docs.length === 0) {
+      throw new Error('Selecciona al menos un Google Doc desde Drive.');
+    }
+
+    const { data: existingRows, error: exErr } = await client
+      .from('bitacoras')
+      .select('id, google_doc_id, orden')
+      .eq('persona_id', persona_id);
+    if (exErr) throw new Error(await formatApiError(exErr));
+
+    const existing = existingRows ?? [];
+    const existingIds = new Set(existing.map((b) => (b.google_doc_id || '').trim()).filter(Boolean));
+    let nextOrder = existing.reduce((max, b) => Math.max(max, (b.orden ?? 0) + 1), 0);
+
+    const rowsToInsert = [];
+    let skipped = 0;
+    for (const doc of docs) {
+      const docId = String(doc.id || '').trim();
+      if (!docId || existingIds.has(docId)) {
+        skipped++;
+        continue;
+      }
+      existingIds.add(docId);
+      const rawUrl = doc.url || `https://docs.google.com/document/d/${docId}/edit`;
+      const checkLink = validateDocsLink(rawUrl);
+      const title = String(doc.name || 'Bitácora Drive').trim().slice(0, 160) || 'Bitácora Drive';
+      rowsToInsert.push({
+        persona_id,
+        titulo: title,
+        url_docs: checkLink.valid && checkLink.normalizedUrl ? checkLink.normalizedUrl : `https://docs.google.com/document/d/${docId}/edit`,
+        google_doc_id: docId,
+        drive_modified_time: doc.modified_time || null,
+        drive_revision_id: doc.head_revision_id || '',
+        estado_sync: 'sincronizada',
+        orden: nextOrder++,
+        linked_by_user_id: actor?.id ?? null,
+      });
+    }
+
+    if (rowsToInsert.length === 0) {
+      return { inserted: [], skipped };
+    }
+
+    const { data, error } = await client
+      .from('bitacoras')
+      .insert(rowsToInsert)
+      .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync');
+    if (error) throw new Error(await formatApiError(error));
+
+    const inserted = data ?? [];
+    const summaryLabel = inserted.length === 1
+      ? `Se vinculó desde Google Drive la bitácora "${inserted[0].titulo}".`
+      : `Se vincularon ${inserted.length} bitácoras directamente desde Google Drive.`;
+    await recordActivity(summaryLabel, {
+      personaId: persona_id,
+      bitacoraId: inserted[0]?.id ?? null,
+      actor,
+    });
+
+    return { inserted, skipped };
   },
 
   async createLogWithDrive({ persona_id, titulo }) {
@@ -707,6 +809,7 @@ export const api = {
         url_docs: checkLink.normalizedUrl || '',
         google_doc_id: checkLink.googleDocId,
         estado_sync: checkLink.googleDocId ? 'pendiente' : 'sin_enlace',
+        ...(checkLink.googleDocId && actor?.id ? { linked_by_user_id: actor.id } : {}),
       })
       .eq('id', id)
       .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, estado_sync')
@@ -924,10 +1027,172 @@ export const api = {
     const client = requireClient();
     const { data, error } = await client
       .from('drive_sync_state')
-      .select('id, start_page_token, ultima_sincronizacion, ultimo_estado, actualizado')
+      .select(
+        'id, start_page_token, ultima_sincronizacion, ultimo_estado, actualizado, root_folder_id, root_folder_name, auto_sync_enabled, auto_sync_interval_min, sync_en_curso, auth_mode, institutional_email, connection_status',
+      )
       .eq('id', 'global')
       .maybeSingle();
     if (error) throw new Error(await formatApiError(error));
+    return data;
+  },
+
+  subscribeDriveSyncState(onUpdate) {
+    if (!supabase || typeof supabase.channel !== 'function') return () => {};
+    const channel = supabase
+      .channel('cemipre-drive-sync-state')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'drive_sync_state', filter: 'id=eq.global' },
+        (payload) => {
+          if (payload?.new) onUpdate(payload.new);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(channel);
+      } catch {
+        // noop
+      }
+    };
+  },
+
+  async getGoogleDriveStatus() {
+    const client = requireClient();
+    const { data, error } = await client.rpc('mi_estado_google_drive');
+    if (error) {
+      return {
+        conectado: false,
+        google_email: '',
+        status: 'desconectado',
+        es_institucional: false,
+        tiene_refresh_token: false,
+        last_error: '',
+        institucional: { conectado: false, google_email: '', status: 'sin_configurar', es_propia: false },
+      };
+    }
+    return data ?? {
+      conectado: false,
+      google_email: '',
+      status: 'desconectado',
+      es_institucional: false,
+      tiene_refresh_token: false,
+      last_error: '',
+      institucional: { conectado: false, google_email: '', status: 'sin_configurar', es_propia: false },
+    };
+  },
+
+  async saveGoogleDriveSession({ provider_token, provider_refresh_token = '' }) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: {
+        action: 'save-provider-tokens',
+        provider_token,
+        provider_refresh_token,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo vincular tu sesión de Google Drive.'));
+    }
+    return data;
+  },
+
+  async startGoogleDriveOAuth({ set_institutional = false } = {}) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: {
+        action: 'start-oauth',
+        set_institutional: Boolean(set_institutional),
+        return_to: window.location.origin,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo iniciar la autorización con Google Drive.'));
+    }
+    if (!data?.auth_url) {
+      throw new Error('El servidor no devolvió la URL de autorización de Google.');
+    }
+    window.location.assign(data.auth_url);
+    return data;
+  },
+
+  async setInstitutionalDriveConnection() {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: { action: 'set-institutional' },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo designar la cuenta institucional de Drive.'));
+    }
+    return data;
+  },
+
+  async setDriveRootFolder({ root_folder_id = '', root_folder_name = '' }) {
+    const client = requireClient();
+    const checkFolder = validateDriveFolderInput(root_folder_id);
+    if (!checkFolder.valid) throw new Error(checkFolder.error);
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: {
+        action: 'set-root-folder',
+        root_folder_id: checkFolder.folderId,
+        root_folder_name: String(root_folder_name || '').trim().slice(0, 160),
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo guardar la carpeta raíz de Google Drive.'));
+    }
+    return data;
+  },
+
+  async setDriveAutoSync({ enabled, interval_min = 5 }) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: {
+        action: 'set-auto-sync',
+        enabled: Boolean(enabled),
+        interval_min,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo actualizar la configuración automática.'));
+    }
+    return data;
+  },
+
+  async disconnectGoogleDrive() {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: { action: 'disconnect' },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo desconectar Google Drive.'));
+    }
+    return data;
+  },
+
+  async browseDrive({
+    section = 'my_drive',
+    folder_id = '',
+    drive_id = '',
+    query = '',
+    mode = 'all',
+    page_token = '',
+  } = {}) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('drive-browser', {
+      body: {
+        section,
+        folder_id,
+        drive_id,
+        query,
+        mode,
+        page_token,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo explorar tu Google Drive.'));
+    }
     return data;
   },
 

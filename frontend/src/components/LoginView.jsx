@@ -150,12 +150,13 @@ export function LoginView() {
           onClick={handleGoogleLogin}
           disabled={busy || !isSupabaseConfigured}
         >
-          Continuar con Google
+          Continuar con Google (con acceso privado a Drive)
         </button>
 
         <p className="auth-footnote">
-          Las cuentas nuevas quedan en estado <strong>pendiente</strong> hasta ser aprobadas por un
-          administrador (o si el correo está en lista blanca institucional).
+          Al ingresar con Google puedes acceder y seleccionar carpetas o bitácoras privadas de Drive
+          sin publicar enlaces. Las cuentas nuevas quedan en estado <strong>pendiente</strong> hasta
+          ser aprobadas por un administrador (o si el correo está en lista blanca institucional).
         </p>
       </section>
     </main>

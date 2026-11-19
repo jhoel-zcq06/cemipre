@@ -2,28 +2,44 @@
 
 Esta guía detalla la configuración de Google Cloud, Supabase Edge Functions, proveedores de IA/correo y despliegue web en producción.
 
-## 1. Google Cloud: Service Account para Drive y Docs
+## 1. Google Cloud: OAuth 2.0 privado para Drive y Docs (Recomendado)
 
-1. Ingresa a **Google Cloud Console** y crea o selecciona el proyecto del equipo.
+Con OAuth 2.0, cada trabajador puede autenticarse con Google, explorar sus carpetas/bitácoras privadas directamente desde la plataforma y el sistema sincroniza automáticamente en segundo plano **sin necesidad de dejar enlaces públicos ("Cualquier persona con el enlace")**.
+
+1. Ingresa a **Google Cloud Console** y selecciona tu proyecto.
 2. En **APIs y servicios → Biblioteca**, habilita:
    - **Google Drive API**
    - **Google Docs API**
-3. Ve a **IAM y administración → Cuentas de servicio** y crea una Service Account (ej. `cemipre-lector-docs`).
-4. En la pestaña **Claves**, crea una clave JSON y descárgala **fuera de este repositorio** (nunca la subas a Git).
-5. Comparte la carpeta raíz de usuarios de CEMIPRE en Google Drive con el correo `client_email` de la Service Account con permiso **Lector**.
-6. Copia el contenido completo del JSON (en una sola línea) como secreto `GOOGLE_SERVICE_ACCOUNT_JSON` en Supabase, y el ID de la carpeta compartida (la parte final de la URL `https://drive.google.com/drive/folders/<ID>`) en `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
+3. Configura la **Pantalla de consentimiento de OAuth**:
+   - **Si usas Google Workspace (`@cemipre.cl`):** selecciona tipo **Interno**. Los tokens no caducan cada 7 días y no requiere verificación externa.
+   - **Si usas cuentas `@gmail.com` personales:** selecciona tipo **Externo** en estado **En pruebas (Testing)** y agrega los correos del equipo en *Usuarios de prueba* (hasta 100). *(Nota: en modo Prueba Google caduca el `refresh_token` cada 7 días; la app muestra un aviso de reconexión en 1 clic y puede usar Service Account como respaldo silencioso).*
+4. En **APIs y servicios → Credenciales → Crear credenciales → ID de cliente OAuth** (tipo **Aplicación web**), agrega **ambas** URIs de redirección autorizadas:
+   - `https://<PROJECT_REF>.supabase.co/auth/v1/callback` *(para login con Google en Supabase Auth)*
+   - `https://<PROJECT_REF>.supabase.co/functions/v1/google-drive-auth` *(para conectar/reconectar Google Drive offline desde la app)*
+5. En **Supabase → Authentication → Providers → Google**, pega el mismo **Client ID** y **Client Secret**.
+6. En **Supabase Edge Function Secrets**, guarda:
+   - `GOOGLE_OAUTH_CLIENT_ID`
+   - `GOOGLE_OAUTH_CLIENT_SECRET`
+   - `GOOGLE_TOKEN_ENCRYPTION_KEY` (clave aleatoria de 32+ caracteres para cifrar tokens con AES-256-GCM en `private.google_oauth_tokens`)
+   - `APP_BASE_URL` (tu dominio de producción, ej. `https://tu-app.vercel.app`)
+7. Una vez desplegado, entra como administrador a **Carpetas Drive**, pulsa **Conectar cuenta Google CEMIPRE** y elige la **Carpeta raíz** directamente desde el selector de Google Drive.
 
-### Cómo funciona `_shared/google.ts`
-- Firma un JWT `RS256` usando la **Web Crypto API** nativa de Deno (sin librerías externas).
-- Solicita un `access_token` de solo lectura (`drive.readonly` y `documents.readonly`) para lectura/resúmenes, y `drive` cuando se crean elementos en Unidades Compartidas.
-- `sync-drive` recorre la carpeta raíz y subcarpetas de primer nivel, detecta Google Docs nuevos, actualiza `drive_modified_time` / `drive_revision_id` / renombres, y marca errores por archivo (`sin_permiso` o `no_encontrada`) sin interrumpir el resto.
+### Respaldo opcional: Service Account para Drive y Docs
+
+1. Si deseas mantener un respaldo adicional (útil para cuentas `@gmail.com` si pasan >7 días sin reconectar), ve a **IAM y administración → Cuentas de servicio** y crea una Service Account (ej. `cemipre-lector-docs`).
+2. En la pestaña **Claves**, crea una clave JSON y descárgala **fuera de este repositorio** (nunca la subas a Git).
+3. Comparte la carpeta raíz de usuarios de CEMIPRE en Google Drive con el correo `client_email` de la Service Account con permiso **Lector**.
+4. Copia el contenido completo del JSON (en una sola línea) como secreto `GOOGLE_SERVICE_ACCOUNT_JSON` en Supabase.
+
+### Cómo funcionan `_shared/google.ts`, `google-drive-auth` y `drive-browser`
+- Los tokens OAuth se guardan cifrados con **AES-256-GCM** en `private.google_oauth_tokens` (esquema inaccesible desde `anon`/`authenticated`), gestionados únicamente mediante funciones `SECURITY DEFINER` otorgadas solo a `service_role`.
+- `drive-browser` usa exclusivamente el token OAuth del trabajador autenticado para explorar *Mi unidad*, *Compartidos conmigo* y *Unidades compartidas* sin exponer tokens en el navegador.
+- `sync-drive` se ejecuta automáticamente cada 5 minutos vía GitHub Actions (`notificar-cambios.yml`) o `pg_cron`, al vincular una carpeta de usuario y al retomar la app tras el cooldown, usando candado atómico anti-duplicados (`sync_lock_until`).
+- `resumen-usuario` y `crear-bitacora-drive` usan la cadena inteligente de credenciales: **OAuth del trabajador → OAuth institucional → Service Account opcional**.
 
 ### Creación automática de carpeta + Google Doc (`crear-bitacora-drive`)
-- Cuando se agrega una bitácora en la plataforma sin pegar un enlace existente, la Edge Function `crear-bitacora-drive` crea automáticamente en Drive una carpeta con el nombre de la bitácora y dentro un Google Doc con el mismo nombre, sincronizándolo con la ficha del usuario (y vinculando su `drive_folder_id` desde `GOOGLE_DRIVE_ROOT_FOLDER_ID` si aún no tenía uno).
-- **Para cuentas `@gmail.com` personales ("Mi unidad"):** las Service Accounts tienen 0 GB de cuota propia, por lo que Google rechaza crear Docs directamente (`storageQuotaExceeded`). Para resolverlo, despliega el puente [apps_script_drive_bridge.gs](apps_script_drive_bridge.gs) como Web App en la cuenta Google dueña de la carpeta raíz y guarda en Supabase Secrets:
-  - `GOOGLE_DRIVE_WEBHOOK_URL` = URL `/exec` de la Web App de Apps Script
-  - `GOOGLE_DRIVE_WEBHOOK_SECRET` = el mismo secreto configurado en `CEMIPRE_DRIVE_SECRET` dentro de Apps Script.
-- **Para Google Workspace con Unidades Compartidas (Shared Drives):** si la carpeta raíz vive en una Unidad Compartida donde la Service Account es Gestor de contenido / Editor, funciona directamente sin necesidad del puente Apps Script.
+- Cuando se agrega una bitácora sin seleccionar ni pegar un enlace existente, `crear-bitacora-drive` crea automáticamente en Drive una carpeta y un Google Doc usando la cuenta Google OAuth conectada (sin chocar con el límite de 0 GB de las Service Accounts y sin necesidad de publicar un Apps Script).
+- El puente [apps_script_drive_bridge.gs](apps_script_drive_bridge.gs) se mantiene únicamente como respaldo legado si no hay cuenta OAuth conectada.
 
 ## 2. Resúmenes con IA (`resumen-usuario`)
 

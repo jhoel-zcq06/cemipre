@@ -1,17 +1,36 @@
-name: Notificar cambios en Google Docs
+name: Sincronización automática Drive y avisos
 
 on:
   schedule:
-    # Ejecución cada 10 minutos (útil en Supabase Free Tier si pg_cron está limitado)
-    - cron: '*/10 * * * *'
+    # Ejecución automática cada 5 minutos (compatible con Supabase Free Tier)
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: cemipre-drive-autosync
+  cancel-in-progress: false
+
 jobs:
-  notificar:
-    name: Consultar Google Drive Changes API
+  sync-y-notificar:
+    name: Sincronizar carpetas Drive y notificar cambios
     runs-on: ubuntu-latest
     steps:
-      - name: Invocar Edge Function notificar-cambios
+      - name: Sincronizar automáticamente carpetas y bitácoras (sync-drive)
+        env:
+          SUPABASE_FUNCTIONS_URL: ${{ secrets.SUPABASE_FUNCTIONS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$SUPABASE_FUNCTIONS_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Secrets SUPABASE_FUNCTIONS_URL o CRON_SECRET no configurados; omitiendo ejecución."
+            exit 0
+          fi
+          curl --fail-with-body -sS -X POST \
+            "${SUPABASE_FUNCTIONS_URL%/}/sync-drive" \
+            -H "Content-Type: application/json" \
+            -H "x-cron-secret: ${CRON_SECRET}" \
+            -d '{"origen":"github-actions","auto":true}'
+
+      - name: Consultar cambios y enviar avisos por correo (notificar-cambios)
         env:
           SUPABASE_FUNCTIONS_URL: ${{ secrets.SUPABASE_FUNCTIONS_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}

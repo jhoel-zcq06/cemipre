@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, isSupabaseConfigured } from './api.js';
+import { api, isDriveSyncStale, isSupabaseConfigured } from './api.js';
 import { InicioView, ResumenesIAView, FavoritosView } from './components/DashboardViews.jsx';
+import { DrivePickerModal } from './components/DrivePickerModal.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
 import { AppModal } from './components/Modals.jsx';
 import { BrandHeader, Notice } from './components/SharedUI.jsx';
@@ -15,15 +16,15 @@ import {
 } from './components/WorkspaceViews.jsx';
 
 const BASE_TABS = [
-  { id: 'inicio', label: 'Inicio', symbol: '⌂', heading: 'Resumen operativo', subtitle: 'Estado general de usuarios, bitácoras y sincronización.' },
-  { id: 'usuarios', label: 'Usuarios', symbol: '▦', heading: 'Usuarios y bitácoras', subtitle: 'Gestiona fichas de usuarios, enlaces a Google Docs y notas internas.' },
+  { id: 'inicio', label: 'Inicio', symbol: '⌂', heading: 'Resumen operativo', subtitle: 'Estado general de usuarios, bitácoras y sincronización automática.' },
+  { id: 'usuarios', label: 'Usuarios', symbol: '▦', heading: 'Usuarios y bitácoras', subtitle: 'Gestiona fichas de usuarios, bitácoras privadas de Google Docs y notas internas.' },
   { id: 'bitacoras', label: 'Bitácoras', symbol: '≡', heading: 'Directorio de bitácoras', subtitle: 'Busca, filtra y verifica el estado de los documentos vinculados.' },
   { id: 'resumenes', label: 'Resúmenes IA', symbol: '✧', heading: 'Resúmenes asistidos por IA', subtitle: 'Síntesis desde el contenido real de Google Docs con referencias verificables.' },
   { id: 'calendario', label: 'Calendario', symbol: '▤', heading: 'Calendario compartido', subtitle: 'Agenda interna del equipo CEMIPRE.' },
   { id: 'actividad', label: 'Actividad', symbol: '◎', heading: 'Registro de actividad', subtitle: 'Auditoría de acciones realizadas por los trabajadores en la plataforma.' },
   { id: 'favoritos', label: 'Favoritos', symbol: '★', heading: 'Usuarios favoritos', subtitle: 'Accesos rápidos guardados en tu perfil.' },
   { id: 'avisos', label: 'Avisos', symbol: '✉', heading: 'Avisos por correo', subtitle: 'Historial de notificaciones enviadas al detectarse ediciones en Google Docs.' },
-  { id: 'drive', label: 'Carpetas Drive', symbol: '☁', heading: 'Sincronización con Google Drive', subtitle: 'Conecta carpetas de CEMIPRE, detecta Docs nuevos y revisa permisos.' },
+  { id: 'drive', label: 'Carpetas Drive', symbol: '☁', heading: 'Google Drive automático', subtitle: 'Sincronización automática en segundo plano, conexión Google privada y selección directa de carpetas.' },
 ];
 
 export default function App() {
@@ -69,6 +70,9 @@ export default function App() {
   const [syncState, setSyncState] = useState(null);
   const [syncResult, setSyncResult] = useState(null);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [driveStatus, setDriveStatus] = useState(null);
+  const [driveAuthBusy, setDriveAuthBusy] = useState(false);
+  const [drivePicker, setDrivePicker] = useState(null);
   const [profiles, setProfiles] = useState([]);
   const [whitelist, setWhitelist] = useState([]);
   const [canManageAdmins, setCanManageAdmins] = useState(false);
@@ -87,6 +91,12 @@ export default function App() {
   selectedIdRef.current = selectedId;
   const hasLoadedWorkspaceRef = useRef(false);
   const notifReqRef = useRef(0);
+  const syncStateRef = useRef(null);
+  syncStateRef.current = syncState;
+  const pendingProviderTokensRef = useRef(null);
+  const lastSavedProviderTokenRef = useRef('');
+  const lastAutoSyncAttemptRef = useRef(0);
+  const pendingPostConnectSyncRef = useRef(false);
 
   const isAdmin = perfil?.rol === 'admin';
   const isAuthorizedWorker = perfil?.rol === 'admin' || perfil?.rol === 'trabajador';
@@ -125,12 +135,49 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get('drive_connected');
+    const driveEmail = params.get('drive_email');
+    const oauthErr = params.get('drive_oauth_error');
+    if (!connected && !oauthErr) return;
+
+    if (connected === '1') {
+      setMessage(
+        `Google Drive conectado${driveEmail ? ` (${driveEmail})` : ''}. La sincronización automática ya está operativa.`,
+      );
+      pendingPostConnectSyncRef.current = true;
+      setTab('drive');
+    } else if (oauthErr) {
+      setError(oauthErr);
+    }
+
+    params.delete('drive_connected');
+    params.delete('drive_email');
+    params.delete('drive_inst');
+    params.delete('drive_oauth_error');
+    const qs = params.toString();
+    const cleanUrl = `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash || ''}`;
+    window.history.replaceState({}, '', cleanUrl);
+  }, []);
+
+  useEffect(() => {
     if (!isSupabaseConfigured) return undefined;
     let active = true;
+
+    const captureProviderTokens = (sess) => {
+      if (sess?.provider_token) {
+        pendingProviderTokensRef.current = {
+          provider_token: sess.provider_token,
+          provider_refresh_token: sess.provider_refresh_token || '',
+        };
+      }
+    };
 
     api.getSession()
       .then(async (currentSession) => {
         if (!active) return;
+        captureProviderTokens(currentSession);
         setSession(currentSession);
         await loadAuthProfile(currentSession);
       })
@@ -143,6 +190,7 @@ export default function App() {
 
     const { data } = api.onAuthStateChange(async (_event, nextSession) => {
       if (!active) return;
+      captureProviderTokens(nextSession);
       setSession(nextSession);
       await loadAuthProfile(nextSession);
     });
@@ -153,18 +201,81 @@ export default function App() {
     };
   }, [loadAuthProfile]);
 
+  const runSilentAutoSync = useCallback(async ({ force = false, personaId } = {}) => {
+    if (typeof api.syncDrive !== 'function') return;
+    const now = Date.now();
+    if (!force && typeof personaId !== 'number' && now - lastAutoSyncAttemptRef.current < 180_000) {
+      return;
+    }
+    if (typeof personaId !== 'number') {
+      lastAutoSyncAttemptRef.current = now;
+    }
+    try {
+      const res = await api.syncDrive({
+        auto: true,
+        ...(typeof personaId === 'number' ? { persona_id: personaId } : {}),
+        ...(force ? { cooldown_seconds: 0 } : {}),
+      });
+      if (res && !res.skipped) {
+        setSyncResult(res);
+        if (res.hubo_cambios || typeof personaId === 'number') {
+          setReload((n) => n + 1);
+        }
+      }
+    } catch {
+      // La sincronización silenciosa de fondo no debe interrumpir al trabajador con alertas intrusivas
+    }
+  }, []);
+
+  // Guardar automáticamente los tokens de Google Drive cuando el usuario inicia sesión con Google
+  useEffect(() => {
+    if (!isAuthorizedWorker || !session?.user?.id) return;
+    const pending = pendingProviderTokensRef.current || (session.provider_token
+      ? {
+          provider_token: session.provider_token,
+          provider_refresh_token: session.provider_refresh_token || '',
+        }
+      : null);
+    if (!pending?.provider_token || typeof api.saveGoogleDriveSession !== 'function') return;
+    if (lastSavedProviderTokenRef.current === pending.provider_token) return;
+
+    lastSavedProviderTokenRef.current = pending.provider_token;
+    pendingProviderTokensRef.current = null;
+
+    api.saveGoogleDriveSession(pending)
+      .then(async (res) => {
+        if (res?.ok && res?.has_drive_scope) {
+          if (typeof api.getGoogleDriveStatus === 'function') {
+            const st = await api.getGoogleDriveStatus();
+            setDriveStatus(st);
+          }
+          if (res.es_institucional) {
+            setReload((n) => n + 1);
+          }
+          runSilentAutoSync({ force: false });
+        }
+      })
+      .catch(() => {
+        // Si el servidor aún no tiene configurada la clave de cifrado OAuth, el usuario puede conectar después
+      });
+  }, [isAuthorizedWorker, session?.user?.id, session?.provider_token, session?.provider_refresh_token, runSilentAutoSync]);
+
   const loadWorkspaceBase = useCallback(async () => {
     if (!isAuthorizedWorker) return;
-    const [statsData, favsData, eventsData, syncData] = await Promise.all([
+    const [statsData, favsData, eventsData, syncData, driveSt] = await Promise.all([
       api.getOverviewStats(),
       api.listFavorites(),
       api.events(),
       api.getDriveSyncState(),
+      typeof api.getGoogleDriveStatus === 'function'
+        ? api.getGoogleDriveStatus()
+        : Promise.resolve(null),
     ]);
     setStats(statsData);
     setFavorites(favsData);
     setEvents(eventsData.eventos);
     setSyncState(syncData);
+    setDriveStatus(driveSt);
   }, [isAuthorizedWorker]);
 
   useEffect(() => {
@@ -187,6 +298,46 @@ export default function App() {
       });
     return () => { ignore = true; };
   }, [isAuthorizedWorker, loadWorkspaceBase, reload]);
+
+  // Disparar sincronización automática en segundo plano si está vencida o tras conectar Google Drive
+  useEffect(() => {
+    if (!isAuthorizedWorker || !syncState) return;
+    if (pendingPostConnectSyncRef.current) {
+      pendingPostConnectSyncRef.current = false;
+      runSilentAutoSync({ force: true });
+      return;
+    }
+    if (isDriveSyncStale(syncState)) {
+      runSilentAutoSync({ force: false });
+    }
+  }, [isAuthorizedWorker, syncState, runSilentAutoSync]);
+
+  // Al volver a la pestaña del navegador y mediante Realtime, mantener datos actualizados sin F5
+  useEffect(() => {
+    if (!isAuthorizedWorker) return undefined;
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && isDriveSyncStale(syncStateRef.current)) {
+        runSilentAutoSync({ force: false });
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    const unsubscribe = typeof api.subscribeDriveSyncState === 'function'
+      ? api.subscribeDriveSyncState((nextState) => {
+          const prevTs = syncStateRef.current?.ultima_sincronizacion;
+          setSyncState((curr) => ({ ...(curr || {}), ...nextState }));
+          if (nextState?.ultima_sincronizacion && nextState.ultima_sincronizacion !== prevTs) {
+            setReload((n) => n + 1);
+          }
+        })
+      : () => {};
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      unsubscribe();
+    };
+  }, [isAuthorizedWorker, runSilentAutoSync]);
 
   // Cargar lista paginada de personas
   useEffect(() => {
@@ -372,24 +523,32 @@ export default function App() {
           codigo: form.codigo || '',
           nombre: form.nombre || '',
           drive_folder_id: form.drive_folder_id || '',
+          drive_folder_name: form.drive_folder_name || '',
         }, actor),
         'Usuario registrado correctamente.',
       );
       if (created) {
         setSelectedId(created.id);
         setTab('usuarios');
+        if (created.drive_folder_id) {
+          runSilentAutoSync({ force: true, personaId: created.id });
+        }
       }
     }
 
     if (modal === 'edit-person') {
-      await runMutation(
+      const updated = await runMutation(
         () => api.updateUser(form.id, {
           codigo: form.codigo || '',
           nombre: form.nombre || '',
           drive_folder_id: form.drive_folder_id || '',
+          drive_folder_name: form.drive_folder_name || '',
         }, actor),
         'Datos del usuario actualizados.',
       );
+      if (updated?.drive_folder_id) {
+        runSilentAutoSync({ force: true, personaId: updated.id });
+      }
     }
 
     if (modal === 'delete-person') {
@@ -406,6 +565,24 @@ export default function App() {
     if (modal === 'new-log') {
       const targetPersonaId = form.persona_id || selectedId;
       if (!targetPersonaId) return;
+
+      const selectedDriveDocs = Array.isArray(form.selected_drive_docs) ? form.selected_drive_docs : [];
+      if (selectedDriveDocs.length > 0 && typeof api.createLogsFromDrive === 'function') {
+        const res = await runMutation(
+          () => api.createLogsFromDrive({
+            persona_id: targetPersonaId,
+            docs: selectedDriveDocs,
+          }, actor),
+          selectedDriveDocs.length === 1
+            ? 'Bitácora vinculada directamente desde Google Drive.'
+            : `${selectedDriveDocs.length} bitácoras vinculadas directamente desde Google Drive.`,
+        );
+        if (res && res.inserted.length === 0 && res.skipped > 0) {
+          setMessage('Las bitácoras seleccionadas ya estaban vinculadas a este usuario.');
+        }
+        return;
+      }
+
       const manualUrl = (form.url_docs || '').trim();
       const shouldCreateInDrive = !manualUrl && form.crear_en_drive !== false;
 
@@ -551,12 +728,189 @@ export default function App() {
     try {
       const res = await api.syncDrive(payload);
       setSyncResult(res);
-      setMessage('Sincronización con Google Drive completada.');
+      setMessage('Comprobación con Google Drive completada.');
       setReload((n) => n + 1);
     } catch (err) {
       setError(err.message);
     } finally {
       setSyncBusy(false);
+    }
+  }
+
+  async function handleConnectGoogleDrive({ set_institutional = false } = {}) {
+    if (typeof api.startGoogleDriveOAuth !== 'function') return;
+    setError('');
+    setDriveAuthBusy(true);
+    try {
+      await api.startGoogleDriveOAuth({ set_institutional });
+    } catch (err) {
+      setError(err.message);
+      setDriveAuthBusy(false);
+    }
+  }
+
+  async function handleDisconnectGoogleDrive() {
+    if (typeof api.disconnectGoogleDrive !== 'function') return;
+    setError('');
+    setMessage('');
+    setDriveAuthBusy(true);
+    try {
+      await api.disconnectGoogleDrive();
+      setMessage('Cuenta Google Drive desconectada.');
+      setReload((n) => n + 1);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDriveAuthBusy(false);
+    }
+  }
+
+  async function handleSetInstitutionalDrive() {
+    if (typeof api.setInstitutionalDriveConnection !== 'function') return;
+    setError('');
+    setMessage('');
+    setDriveAuthBusy(true);
+    try {
+      await api.setInstitutionalDriveConnection();
+      setMessage('Tu cuenta Google quedó activa para la sincronización automática del equipo.');
+      setReload((n) => n + 1);
+      runSilentAutoSync({ force: true });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDriveAuthBusy(false);
+    }
+  }
+
+  async function handleToggleAutoSync(enabled) {
+    if (typeof api.setDriveAutoSync !== 'function') return;
+    setError('');
+    setMessage('');
+    setDriveAuthBusy(true);
+    try {
+      await api.setDriveAutoSync({ enabled, interval_min: syncState?.auto_sync_interval_min || 5 });
+      setMessage(enabled ? 'Sincronización automática activada.' : 'Sincronización automática pausada.');
+      setReload((n) => n + 1);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDriveAuthBusy(false);
+    }
+  }
+
+  async function handleSaveRootFolder({ root_folder_id = '', root_folder_name = '' }) {
+    if (typeof api.setDriveRootFolder !== 'function') return false;
+    setError('');
+    setMessage('');
+    setDriveAuthBusy(true);
+    try {
+      await api.setDriveRootFolder({ root_folder_id, root_folder_name });
+      setMessage(
+        root_folder_id
+          ? `Carpeta raíz guardada${root_folder_name ? ` ("${root_folder_name}")` : ''}. Sincronizando automáticamente…`
+          : 'Carpeta raíz desvinculada.',
+      );
+      setReload((n) => n + 1);
+      if (root_folder_id) {
+        runSilentAutoSync({ force: true });
+      }
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    } finally {
+      setDriveAuthBusy(false);
+    }
+  }
+
+  async function handleDrivePickerConfirm(selection) {
+    const active = drivePicker;
+    setDrivePicker(null);
+    if (!active || !selection) return;
+
+    if (active.target === 'person-folder') {
+      setForm((prev) => ({
+        ...prev,
+        drive_folder_id: selection.id,
+        drive_folder_name: selection.name || '',
+        nombre: prev.nombre || selection.name || '',
+      }));
+      return;
+    }
+
+    if (active.target === 'new-log') {
+      const docs = Array.isArray(selection) ? selection : [selection];
+      setForm((prev) => ({
+        ...prev,
+        selected_drive_docs: docs,
+        url_docs: '',
+        crear_en_drive: false,
+      }));
+      return;
+    }
+
+    if (active.target === 'edit-log') {
+      const doc = Array.isArray(selection) ? selection[0] : selection;
+      if (!doc) return;
+      setForm((prev) => ({
+        ...prev,
+        url_docs: doc.url || `https://docs.google.com/document/d/${doc.id}/edit`,
+        titulo: prev.titulo || doc.name || '',
+      }));
+      return;
+    }
+
+    if (active.target === 'root-folder') {
+      await handleSaveRootFolder({
+        root_folder_id: selection.id,
+        root_folder_name: selection.name || '',
+      });
+      return;
+    }
+
+    if (active.target === 'assign-user-folder' && active.context) {
+      const targetUser = active.context;
+      setError('');
+      setMessage('');
+      try {
+        await api.updateUser(targetUser.id, {
+          codigo: targetUser.codigo,
+          nombre: targetUser.nombre,
+          drive_folder_id: selection.id,
+          drive_folder_name: selection.name || '',
+        }, perfil);
+        setMessage(`Carpeta "${selection.name}" vinculada a ${targetUser.codigo}. Sincronizando sus bitácoras…`);
+        setReload((n) => n + 1);
+        runSilentAutoSync({ force: true, personaId: targetUser.id });
+      } catch (err) {
+        setError(err.message);
+      }
+      return;
+    }
+
+    if (active.target === 'direct-add-logs' && active.context?.persona_id) {
+      const docs = Array.isArray(selection) ? selection : [selection];
+      if (docs.length === 0 || typeof api.createLogsFromDrive !== 'function') return;
+      setError('');
+      setMessage('');
+      try {
+        const res = await api.createLogsFromDrive({
+          persona_id: active.context.persona_id,
+          docs,
+        }, perfil);
+        if (res.inserted.length > 0) {
+          setMessage(
+            res.inserted.length === 1
+              ? `Se vinculó "${res.inserted[0].titulo}" desde Google Drive.`
+              : `Se vincularon ${res.inserted.length} bitácoras directamente desde Google Drive.`,
+          );
+        } else {
+          setMessage('Las bitácoras seleccionadas ya estaban vinculadas a este usuario.');
+        }
+        setReload((n) => n + 1);
+      } catch (err) {
+        setError(err.message);
+      }
     }
   }
 
@@ -716,8 +1070,10 @@ export default function App() {
                   recentActivity={changes}
                   events={events}
                   syncState={syncState}
+                  driveStatus={driveStatus}
                   onNavigate={setTab}
                   onOpenUser={openUserInWorkspace}
+                  onConnectGoogleDrive={handleConnectGoogleDrive}
                 />
               )}
 
@@ -741,6 +1097,7 @@ export default function App() {
                   onSelectPerson={setSelectedId}
                   onToggleFavorite={handleToggleFavorite}
                   onOpenModal={openModal}
+                  onOpenDrivePicker={setDrivePicker}
                   onGenerateSummary={handleGenerateSummary}
                   onAddComment={handleAddComment}
                   onDeleteComment={handleDeleteComment}
@@ -815,9 +1172,18 @@ export default function App() {
                   syncResult={syncResult}
                   syncBusy={syncBusy}
                   people={people}
+                  isAdmin={isAdmin}
+                  driveStatus={driveStatus}
+                  driveAuthBusy={driveAuthBusy}
                   onSyncDrive={handleSyncDrive}
                   onOpenUser={openUserInWorkspace}
                   onOpenModal={openModal}
+                  onConnectGoogleDrive={handleConnectGoogleDrive}
+                  onDisconnectGoogleDrive={handleDisconnectGoogleDrive}
+                  onSetInstitutionalDrive={handleSetInstitutionalDrive}
+                  onToggleAutoSync={handleToggleAutoSync}
+                  onSaveRootFolder={handleSaveRootFolder}
+                  onOpenDrivePicker={setDrivePicker}
                 />
               )}
 
@@ -846,9 +1212,25 @@ export default function App() {
         form={form}
         saving={saving}
         error={error}
+        driveStatus={driveStatus}
+        driveAuthBusy={driveAuthBusy}
+        onOpenDrivePicker={setDrivePicker}
+        onConnectGoogleDrive={handleConnectGoogleDrive}
+        onDisconnectGoogleDrive={handleDisconnectGoogleDrive}
         onUpdateField={updateField}
         onClose={closeModal}
         onSubmit={submitModal}
+      />
+
+      <DrivePickerModal
+        open={Boolean(drivePicker)}
+        mode={drivePicker?.mode || 'docs'}
+        multiple={drivePicker?.multiple ?? (drivePicker?.mode === 'docs')}
+        title={drivePicker?.title}
+        driveStatus={driveStatus}
+        onConnectGoogle={() => handleConnectGoogleDrive({ set_institutional: drivePicker?.target === 'root-folder' && isAdmin })}
+        onConfirm={handleDrivePickerConfirm}
+        onClose={() => setDrivePicker(null)}
       />
     </div>
   );
