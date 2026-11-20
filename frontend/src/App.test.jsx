@@ -25,6 +25,7 @@ vi.mock('./api.js', async (importOriginal) => {
       })),
       listFavorites: vi.fn(async () => []),
       events: vi.fn(async () => ({ eventos: [] })),
+      createEvent: vi.fn(async (payload) => ({ id: 77, ...payload })),
       getDriveSyncState: vi.fn(async () => null),
       getGoogleDriveStatus: vi.fn(async () => ({
         conectado: true,
@@ -74,6 +75,9 @@ vi.mock('./api.js', async (importOriginal) => {
         drive_folder_id,
         drive_folder_name,
       })),
+      updateUser: vi.fn(async (id, payload) => ({ id, ...payload })),
+      setDriveRootFolder: vi.fn(async (payload) => ({ ok: true, ...payload })),
+      updateLog: vi.fn(async (id, payload) => ({ id, persona_id: 1, ...payload })),
       users: vi.fn(async () => ({
         personas: [
           { id: 1, codigo: 'USR-001', nombre: 'Rin', total_bitacoras: 1, drive_folder_id: 'folder-1' },
@@ -267,10 +271,18 @@ describe('Flujo de resumen IA en App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
     await waitFor(() => {
       expect(api.createLogWithDrive).toHaveBeenCalledWith({ persona_id: 1, titulo: 'bitacorax' });
+      expect(api.syncDrive).toHaveBeenCalledWith({
+        auto: true,
+        persona_id: 1,
+        cooldown_seconds: 0,
+        force: true,
+      });
     });
     expect(api.createLog).not.toHaveBeenCalled();
 
-    // Si ahora se pega un enlace existente de Google Docs, usa api.createLog sin crear en Drive
+    api.syncDrive.mockClear();
+
+    // Si ahora se pega un enlace existente de Google Docs, usa api.createLog sin crear en Drive y sincroniza
     fireEvent.click(await screen.findByRole('button', { name: '+ Agregar bitácora' }));
     fireEvent.change(await screen.findByLabelText('Nombre de la bitácora'), { target: { value: 'bitacora-manual' } });
     fireEvent.change(screen.getByLabelText(/Enlace de Google Docs/i), {
@@ -291,10 +303,16 @@ describe('Flujo de resumen IA en App', () => {
         },
         expect.objectContaining({ id: 'u-1' }),
       );
+      expect(api.syncDrive).toHaveBeenCalledWith({
+        auto: true,
+        persona_id: 1,
+        cooldown_seconds: 0,
+        force: true,
+      });
     });
   });
 
-  it('sincroniza automáticamente en segundo plano al cargar cuando syncState está vencido y permite elegir bitácoras privadas desde Drive', async () => {
+  it('sincroniza automáticamente en segundo plano al cargar cuando syncState está vencido y al elegir bitácoras desde Drive', async () => {
     api.getDriveSyncState.mockResolvedValue({
       id: 'global',
       auto_sync_enabled: true,
@@ -309,6 +327,7 @@ describe('Flujo de resumen IA en App', () => {
     await waitFor(() => {
       expect(api.syncDrive).toHaveBeenCalledWith({ auto: true });
     });
+    api.syncDrive.mockClear();
 
     const navUsers = await screen.findByRole('button', { name: 'Usuarios' });
     fireEvent.click(navUsers);
@@ -326,6 +345,94 @@ describe('Flujo de resumen IA en App', () => {
           persona_id: 1,
           docs: [expect.objectContaining({ id: 'privateDoc987654', name: 'Bitácora Privada Google' })],
         },
+        expect.objectContaining({ id: 'u-1' }),
+      );
+      expect(api.syncDrive).toHaveBeenCalledWith({
+        auto: true,
+        persona_id: 1,
+        cooldown_seconds: 0,
+        force: true,
+      });
+    });
+  });
+
+  it('sincroniza automáticamente al agregar una carpeta de usuario o carpeta raíz y no muestra textos técnicos ni promocionales', async () => {
+    render(<App />);
+
+    await screen.findByRole('button', { name: 'Inicio' });
+    expect(screen.queryByText(/Supabase \+ RLS/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/enlaces públicos/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/React \+ Supabase/i)).not.toBeInTheDocument();
+
+    // Agregar carpeta al crear un usuario
+    fireEvent.click(screen.getByRole('button', { name: '+ Nuevo usuario' }));
+    fireEvent.change(await screen.findByLabelText('Código identificador'), { target: { value: 'USR-099' } });
+    fireEvent.change(screen.getByLabelText('Nombre o alias de referencia'), { target: { value: 'Persona Carpeta' } });
+    fireEvent.change(screen.getByLabelText('Carpeta en Google Drive (URL o ID, opcional)'), {
+      target: { value: 'https://drive.google.com/drive/folders/1FolderIdForUser99' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar' }));
+
+    await waitFor(() => {
+      expect(api.createUser).toHaveBeenCalled();
+      expect(api.syncDrive).toHaveBeenCalledWith({
+        auto: true,
+        persona_id: 99,
+        cooldown_seconds: 0,
+        force: true,
+      });
+    });
+
+    api.syncDrive.mockClear();
+
+    // Agregar carpeta raíz desde Carpetas Drive
+    fireEvent.click(screen.getByRole('button', { name: 'Carpetas Drive' }));
+    const rootInput = await screen.findByLabelText('Pegar enlace o ID de carpeta raíz');
+    fireEvent.change(rootInput, {
+      target: { value: 'https://drive.google.com/drive/folders/1RootFolderId12345' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar carpeta raíz' }));
+
+    await waitFor(() => {
+      expect(api.setDriveRootFolder).toHaveBeenCalledWith({
+        root_folder_id: 'https://drive.google.com/drive/folders/1RootFolderId12345',
+        root_folder_name: '',
+      });
+      expect(api.syncDrive).toHaveBeenCalledWith({
+        auto: true,
+        cooldown_seconds: 0,
+        force: true,
+      });
+    });
+  });
+
+  it('muestra la pestaña Calendario con vistas Mensual, Semanal y Día y permite crear eventos desde un horario', async () => {
+    render(<App />);
+
+    const navCalendar = await screen.findByRole('button', { name: 'Calendario' });
+    fireEvent.click(navCalendar);
+
+    expect(await screen.findByRole('tab', { name: 'Mensual' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Semanal' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Día' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Semanal' }));
+    expect(screen.getByRole('tab', { name: 'Semanal' })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Día' }));
+    expect(screen.getByRole('tab', { name: 'Día' })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Evento este día' }));
+    const titleInput = await screen.findByLabelText('Nombre del evento');
+    fireEvent.change(titleInput, { target: { value: 'Coordinación semanal' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Crear evento' }));
+
+    await waitFor(() => {
+      expect(api.createEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          titulo: 'Coordinación semanal',
+          responsable: 'Equipo CEMIPRE',
+        }),
         expect.objectContaining({ id: 'u-1' }),
       );
     });

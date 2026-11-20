@@ -279,7 +279,7 @@ Deno.serve(async (req: Request) => {
       authHint = resolved.lastAuthError;
       if (baseCandidates.length === 0) {
         return errorResponse(
-          authHint || 'Conecta tu cuenta de Google Drive (o la cuenta institucional) para leer las bitácoras privadas.',
+          authHint || 'Conecta tu cuenta de Google Drive para leer las bitácoras.',
           resolved.reconnectNeeded ? 401 : 400,
           { code: resolved.reconnectNeeded ? 'reconexion_requerida' : 'configuracion' },
         );
@@ -403,7 +403,7 @@ Deno.serve(async (req: Request) => {
         acciones_pendientes: [],
         incertidumbres: advertenciasPrevias.length > 0
           ? advertenciasPrevias
-          : ['Agrega o selecciona bitácoras desde tu Google Drive (sin necesidad de hacerlas públicas) para habilitar los resúmenes.'],
+          : ['Agrega o selecciona bitácoras desde Google Drive para habilitar los resúmenes.'],
         fuentes: fuentes.map(({ textoMinimizado: _omit, ...rest }) => rest),
       });
     }
@@ -484,7 +484,7 @@ ${contextoParaSintesis}`;
       bitacoras_leidas: leidas.length,
       generado_en: new Date().toISOString(),
       modelo: modelUsed,
-      aviso_revision: 'Resumen asistido por IA a partir de Google Docs reales (con minimización previa). Requiere revisión profesional antes de tomar decisiones.',
+      aviso_revision: 'Resumen asistido por IA. Requiere revisión profesional antes de tomar decisiones.',
       estado_general: estructurado.estado_general,
       avances_recientes: estructurado.avances_recientes,
       acciones_pendientes: estructurado.acciones_pendientes,

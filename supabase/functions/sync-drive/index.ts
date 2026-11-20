@@ -26,6 +26,7 @@ interface SyncRequestBody {
   sync_titles?: boolean;
   crear_faltantes?: boolean;
   auto?: boolean;
+  force?: boolean;
   origen?: string;
   cooldown_seconds?: number;
 }
@@ -77,20 +78,39 @@ function resolveDocTarget(
   return null;
 }
 
+function resolveFolderTarget(
+  item: DriveFileMeta,
+): { id: string; name: string } | null {
+  if (item.mimeType === MIME_FOLDER) {
+    return { id: item.id, name: item.name };
+  }
+  if (
+    item.mimeType === MIME_SHORTCUT
+    && item.shortcutDetails?.targetMimeType === MIME_FOLDER
+    && item.shortcutDetails?.targetId
+  ) {
+    return { id: item.shortcutDetails.targetId, name: item.name };
+  }
+  return null;
+}
+
 async function collectDocsInPersonaFolder(
   folderId: string,
   token: string,
 ): Promise<Array<{ id: string; name: string; webViewLink?: string; modifiedTime?: string; headRevisionId?: string }>> {
   const children = await listFolderChildren(folderId, token);
   const docs: Array<{ id: string; name: string; webViewLink?: string; modifiedTime?: string; headRevisionId?: string }> = [];
-  const subfolders: DriveFileMeta[] = [];
+  const subfolders: Array<{ id: string; name: string }> = [];
 
   for (const child of children) {
     const doc = resolveDocTarget(child);
     if (doc) {
       docs.push(doc);
-    } else if (child.mimeType === MIME_FOLDER) {
-      subfolders.push(child);
+    } else {
+      const folder = resolveFolderTarget(child);
+      if (folder) {
+        subfolders.push(folder);
+      }
     }
   }
 
@@ -188,6 +208,7 @@ Deno.serve(async (req: Request) => {
 
     const isAutoMode = isCron || Boolean(body.auto);
     const isGlobalSync = typeof body.persona_id !== 'number';
+    const isForcedEventSync = Boolean(body.force) || body.cooldown_seconds === 0;
 
     // Leer estado global actual
     const { data: syncState } = await adminClient
@@ -196,7 +217,7 @@ Deno.serve(async (req: Request) => {
       .eq('id', 'global')
       .maybeSingle();
 
-    if (isAutoMode && isGlobalSync && syncState && syncState.auto_sync_enabled === false) {
+    if (isAutoMode && isGlobalSync && !isForcedEventSync && syncState && syncState.auto_sync_enabled === false) {
       return jsonResponse({
         ok: true,
         skipped: true,
@@ -253,7 +274,7 @@ Deno.serve(async (req: Request) => {
         });
       }
       return errorResponse(
-        lastAuthError || 'Conecta una cuenta de Google Drive (o configura una Service Account) para sincronizar.',
+        lastAuthError || 'Conecta una cuenta de Google Drive para sincronizar.',
         reconnectNeeded ? 401 : 400,
         { code: reconnectNeeded ? 'reconexion_requerida' : 'configuracion' },
       );
@@ -334,7 +355,9 @@ Deno.serve(async (req: Request) => {
         baseCandidates,
         (c) => listFolderChildren(rootFolderId, c.token),
       );
-      const driveFolders = rootItems.filter((item) => item.mimeType === MIME_FOLDER);
+      const driveFolders = rootItems
+        .map((item) => resolveFolderTarget(item))
+        .filter((f): f is { id: string; name: string } => f !== null);
 
       for (const folder of driveFolders) {
         const parsed = parseFolderIdentity(folder.name, folder.id);
@@ -384,6 +407,45 @@ Deno.serve(async (req: Request) => {
           }
         }
       }
+    } else if (rootFolderId && !isGlobalSync && personas.length === 1 && !normalizeFolderId(personas[0].drive_folder_id)) {
+      try {
+        const targetPersona = personas[0];
+        const { result: rootItems } = await withDriveTokenFallback(
+          baseCandidates,
+          (c) => listFolderChildren(rootFolderId, c.token),
+        );
+        const driveFolders = rootItems
+          .map((item) => resolveFolderTarget(item))
+          .filter((f): f is { id: string; name: string } => f !== null);
+        const targetCode = targetPersona.codigo.trim().toUpperCase();
+        const targetName = targetPersona.nombre.trim().toLowerCase();
+        const matchedFolder = driveFolders.find((folder) => {
+          const parsed = parseFolderIdentity(folder.name, folder.id);
+          if (parsed.codigo.toUpperCase() === targetCode) return true;
+          const rawName = folder.name.trim().toLowerCase();
+          return rawName === targetName || rawName === targetCode.toLowerCase();
+        });
+        if (matchedFolder) {
+          const { error: updErr } = await adminClient
+            .from('personas')
+            .update({
+              drive_folder_id: matchedFolder.id,
+              drive_folder_name: matchedFolder.name.slice(0, 160),
+            })
+            .eq('id', targetPersona.id);
+          if (!updErr) {
+            targetPersona.drive_folder_id = matchedFolder.id;
+            targetPersona.drive_folder_name = matchedFolder.name;
+            report.carpetas_vinculadas++;
+            report.detalles.push({
+              tipo: 'carpeta_vinculada',
+              mensaje: `${targetPersona.codigo} vinculada a carpeta "${matchedFolder.name}".`,
+            });
+          }
+        }
+      } catch {
+        // Si no se pudo consultar la carpeta raíz, continuar verificando las bitácoras de la persona
+      }
     }
 
     // Paso 2: Sincronizar Docs dentro de cada carpeta de persona que tenga drive_folder_id
@@ -399,6 +461,7 @@ Deno.serve(async (req: Request) => {
       personaOwnerById.set(p.id, p.linked_by_user_id ?? null);
     }
     report.personas_procesadas = personas.length;
+    let bitacorasModificadas = 0;
 
     for (const { persona, folderId } of personasConCarpeta) {
       try {
@@ -454,6 +517,7 @@ Deno.serve(async (req: Request) => {
               }
               await adminClient.from('bitacoras').update(updatePayload).eq('id', target.id);
               target.google_doc_id = doc.id;
+              bitacorasModificadas++;
             }
             report.bitacoras_actualizadas++;
           } else {
@@ -538,6 +602,7 @@ Deno.serve(async (req: Request) => {
               .from('bitacoras')
               .update({ estado_sync: 'no_encontrada' })
               .eq('id', b.id);
+            bitacorasModificadas++;
           }
           report.detalles.push({
             tipo: 'papelera',
@@ -567,11 +632,15 @@ Deno.serve(async (req: Request) => {
             });
           }
           await adminClient.from('bitacoras').update(updatePayload).eq('id', b.id);
+          bitacorasModificadas++;
         }
         report.bitacoras_actualizadas++;
       } catch (err) {
         if (err instanceof GoogleApiError && err.code === 'sin_permiso') {
           report.errores_permisos++;
+          if (b.estado_sync !== 'sin_permiso') {
+            bitacorasModificadas++;
+          }
           await adminClient.from('bitacoras').update({ estado_sync: 'sin_permiso' }).eq('id', b.id);
           report.detalles.push({
             tipo: 'sin_permiso',
@@ -579,6 +648,9 @@ Deno.serve(async (req: Request) => {
           });
         } else if (err instanceof GoogleApiError && err.code === 'no_encontrada') {
           report.no_encontradas++;
+          if (b.estado_sync !== 'no_encontrada') {
+            bitacorasModificadas++;
+          }
           await adminClient.from('bitacoras').update({ estado_sync: 'no_encontrada' }).eq('id', b.id);
           report.detalles.push({
             tipo: 'no_encontrada',
@@ -609,7 +681,7 @@ Deno.serve(async (req: Request) => {
       + report.nuevas_bitacoras
       + report.renombres_detectados;
 
-    const prefijoModo = isAutoMode ? 'Sincronización automática' : 'Sincronización verificada';
+    const prefijoModo = isAutoMode ? 'Sincronización automática' : 'Sincronización';
     const estadoTexto = `${prefijoModo}: ${report.bitacoras_actualizadas} bitácoras al día, ${report.nuevas_bitacoras} nuevas, ${report.errores_permisos} sin permiso.`;
 
     const authMode = primaryToken.source === 'service_account'
@@ -658,7 +730,7 @@ Deno.serve(async (req: Request) => {
       ok: true,
       skipped: false,
       auto: isAutoMode,
-      hubo_cambios: totalNovedades > 0,
+      hubo_cambios: totalNovedades > 0 || bitacorasModificadas > 0,
       ...report,
       ultima_sincronizacion: nowIso,
     });

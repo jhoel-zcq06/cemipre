@@ -188,13 +188,9 @@ export function DrivePickerModal({
           <div className="drive-picker-connect">
             <Notice kind="warn">
               {needsReconnect
-                ? 'Tu sesión de Google Drive expiró o necesita autorización nuevamente.'
-                : 'Conecta tu cuenta Google para explorar tus carpetas y bitácoras privadas sin dejar enlaces públicos.'}
+                ? 'Tu sesión de Google Drive expiró. Vuelve a conectarla para continuar.'
+                : 'Conecta tu cuenta de Google Drive para seleccionar carpetas o documentos.'}
             </Notice>
-            <p className="muted">
-              Solo tú puedes explorar tus archivos privados desde este selector. Los documentos
-              permanecen restringidos al equipo de CEMIPRE.
-            </p>
             <div className="form-actions">
               <button type="button" className="btn btn-ghost" onClick={onClose}>
                 Cancelar

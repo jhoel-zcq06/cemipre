@@ -304,7 +304,7 @@ export async function refreshGoogleOAuthToken(refreshToken: string): Promise<{
     }
     if (errCode === 'invalid_grant' || response.status === 400 || response.status === 401) {
       throw new GoogleApiError(
-        'La autorización de Google Drive expiró o fue revocada. Reconecta tu cuenta Google en 1 clic.',
+        'La autorización de Google Drive expiró o fue revocada. Vuelve a conectar tu cuenta.',
         401,
         'reconexion_requerida',
       );
@@ -409,7 +409,7 @@ async function getFreshOAuthTokenForRow(
       p_expires_at: null,
     });
     throw new GoogleApiError(
-      'Tu sesión de Google Drive expiró. Pulsa "Conectar Google Drive" para autorizar acceso continuo.',
+      'Tu sesión de Google Drive expiró. Vuelve a conectar tu cuenta para continuar.',
       401,
       'reconexion_requerida',
     );
@@ -688,7 +688,7 @@ export async function getGoogleAccessToken(scopes = GOOGLE_READONLY_SCOPES): Pro
 function classifyGoogleHttpError(status: number, context: string): GoogleApiError {
   if (status === 401 || status === 403) {
     return new GoogleApiError(
-      `Sin permiso de lectura en Google Drive (${context}). Verifica que la cuenta Google conectada tenga acceso al archivo o carpeta (no hace falta dejarlo público).`,
+      `Sin permiso de lectura en Google Drive (${context}). Verifica que la cuenta Google conectada tenga acceso al archivo o carpeta.`,
       status,
       'sin_permiso',
     );

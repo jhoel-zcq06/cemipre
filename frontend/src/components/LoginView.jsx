@@ -49,13 +49,13 @@ export function LoginView() {
   return (
     <main id="contenido" className="auth-shell">
       <section className="auth-card" aria-labelledby="auth-title">
-        <BrandHeader subtitle="Plataforma centralizada de bitácoras" />
+        <BrandHeader subtitle="Gestión de bitácoras" />
 
         <h1 id="auth-title" className="auth-title">
-          {mode === 'login' ? 'Iniciar sesión de trabajador' : 'Solicitar acceso al equipo'}
+          {mode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
         </h1>
         <p className="subtitle">
-          Acceso restringido al equipo autorizado de Fundación CEMIPRE.
+          Acceso para el equipo de Fundación CEMIPRE.
         </p>
 
         {!isSupabaseConfigured && (
@@ -137,8 +137,8 @@ export function LoginView() {
             {busy
               ? 'Verificando…'
               : mode === 'login'
-                ? 'Entrar a la plataforma'
-                : 'Crear solicitud de cuenta'}
+                ? 'Ingresar'
+                : 'Crear cuenta'}
           </button>
         </form>
 
@@ -150,13 +150,11 @@ export function LoginView() {
           onClick={handleGoogleLogin}
           disabled={busy || !isSupabaseConfigured}
         >
-          Continuar con Google (con acceso privado a Drive)
+          Continuar con Google
         </button>
 
         <p className="auth-footnote">
-          Al ingresar con Google puedes acceder y seleccionar carpetas o bitácoras privadas de Drive
-          sin publicar enlaces. Las cuentas nuevas quedan en estado <strong>pendiente</strong> hasta
-          ser aprobadas por un administrador (o si el correo está en lista blanca institucional).
+          Las cuentas nuevas requieren aprobación de un administrador antes de ingresar.
         </p>
       </section>
     </main>
@@ -171,13 +169,11 @@ export function PendingApprovalView({ perfil, email, onRefresh, onSignOut, refre
 
         <h1 id="pending-title" className="auth-title">Acceso pendiente de aprobación</h1>
         <Notice kind="warn">
-          Tu sesión está activa como <strong>{perfil?.nombre || email}</strong> ({perfil?.email || email}),
-          pero tu rol actual es <strong>pendiente</strong>.
+          Ingresaste como <strong>{perfil?.nombre || email}</strong> ({perfil?.email || email}).
+          Tu cuenta está pendiente de aprobación.
         </Notice>
         <p className="subtitle">
-          Por protección de los datos de personas atendidas en CEMIPRE, un administrador debe
-          habilitar tu perfil como <code>trabajador</code> o <code>admin</code> antes de mostrar
-          las bitácoras.
+          Un administrador de CEMIPRE debe aprobar tu cuenta para que puedas acceder a las bitácoras.
         </p>
 
         <div className="pending-actions">
