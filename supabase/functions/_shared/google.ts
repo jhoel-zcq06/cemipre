@@ -14,12 +14,18 @@ export const GOOGLE_READONLY_SCOPES = [
   'https://www.googleapis.com/auth/documents.readonly',
 ].join(' ');
 export const GOOGLE_WRITE_SCOPES = 'https://www.googleapis.com/auth/drive';
+export const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
 export const GOOGLE_OAUTH_DRIVE_SCOPES = [
   'openid',
   'email',
   'profile',
   'https://www.googleapis.com/auth/drive',
+  GOOGLE_CALENDAR_SCOPE,
 ].join(' ');
+
+export function hasCalendarScope(scopes?: string | null): boolean {
+  return typeof scopes === 'string' && scopes.toLowerCase().includes('calendar');
+}
 
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
 const DRIVE_ID_REGEX = /^[a-zA-Z0-9_-]{10,120}$/;

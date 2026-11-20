@@ -10,6 +10,7 @@ Con OAuth 2.0, cada trabajador puede autenticarse con Google, explorar sus carpe
 2. En **APIs y servicios → Biblioteca**, habilita:
    - **Google Drive API**
    - **Google Docs API**
+   - **Google Calendar API** *(necesaria para sincronizar eventos desde la pestaña Calendario)*
 3. Configura la **Pantalla de consentimiento de OAuth**:
    - **Si usas Google Workspace (`@cemipre.cl`):** selecciona tipo **Interno**. Los tokens no caducan cada 7 días y no requiere verificación externa.
    - **Si usas cuentas `@gmail.com` personales:** selecciona tipo **Externo** en estado **En pruebas (Testing)** y agrega los correos del equipo en *Usuarios de prueba* (hasta 100). *(Nota: en modo Prueba Google caduca el `refresh_token` cada 7 días; la app muestra un aviso de reconexión en 1 clic y puede usar Service Account como respaldo silencioso).*
@@ -40,6 +41,12 @@ Con OAuth 2.0, cada trabajador puede autenticarse con Google, explorar sus carpe
 ### Creación automática de carpeta + Google Doc (`crear-bitacora-drive`)
 - Cuando se agrega una bitácora sin seleccionar ni pegar un enlace existente, `crear-bitacora-drive` crea automáticamente en Drive una carpeta y un Google Doc usando la cuenta Google OAuth conectada (sin chocar con el límite de 0 GB de las Service Accounts y sin necesidad de publicar un Apps Script).
 - El puente [apps_script_drive_bridge.gs](apps_script_drive_bridge.gs) se mantiene únicamente como respaldo legado si no hay cuenta OAuth conectada.
+
+### Sincronización con Google Calendar (`sync-google-calendar`)
+- Reutiliza el mismo cliente OAuth 2.0 y los mismos tokens cifrados en `private.google_oauth_tokens` (agregando el scope `https://www.googleapis.com/auth/calendar`, sin requerir nuevas URIs de redirección).
+- Aplica la migración `supabase/migrations/0008_calendario_google_y_etiquetas.sql` y despliega `google-drive-auth` y `sync-google-calendar`.
+- Desde **Calendario → Conectar Google Calendar**, cada trabajador puede elegir qué calendarios de Google sincronizar y alternar entre sincronización **bidireccional** o **solo importar**.
+- Cada calendario sincronizado y cada etiqueta de evento aparece en el panel **Etiquetas y calendarios** para mostrar u ocultar grupos de eventos igual que en Google Calendar.
 
 ## 2. Resúmenes con IA (`resumen-usuario`)
 

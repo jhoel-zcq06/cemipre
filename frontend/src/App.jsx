@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, isDriveSyncStale, isSupabaseConfigured } from './api.js';
+import { api, hasGoogleCalendarScope, isDriveSyncStale, isSupabaseConfigured } from './api.js';
 import { InicioView, ResumenesIAView, FavoritosView } from './components/DashboardViews.jsx';
 import { DrivePickerModal } from './components/DrivePickerModal.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
@@ -61,6 +61,8 @@ export default function App() {
 
   // Calendario, Actividad, Notificaciones, Drive, Admin
   const [events, setEvents] = useState([]);
+  const [calendarSyncState, setCalendarSyncState] = useState(null);
+  const [calendarSyncBusy, setCalendarSyncBusy] = useState(false);
   const [changes, setChanges] = useState([]);
   const [activityMeta, setActivityMeta] = useState({ page: 1, totalPages: 1, total: 0 });
   const [activityPage, setActivityPage] = useState(1);
@@ -97,6 +99,7 @@ export default function App() {
   const lastSavedProviderTokenRef = useRef('');
   const lastAutoSyncAttemptRef = useRef(0);
   const pendingPostConnectSyncRef = useRef(false);
+  const pendingCalendarPostConnectSyncRef = useRef(false);
   const activeSyncCountRef = useRef(0);
   const syncRetryTimersRef = useRef(new Set());
 
@@ -142,9 +145,21 @@ export default function App() {
     const connected = params.get('drive_connected');
     const driveEmail = params.get('drive_email');
     const oauthErr = params.get('drive_oauth_error');
-    if (!connected && !oauthErr) return;
+    const calConnected = params.get('calendar_connected');
+    const calEmail = params.get('calendar_email');
+    const calErr = params.get('calendar_oauth_error');
+    if (!connected && !oauthErr && !calConnected && !calErr) return;
 
-    if (connected === '1') {
+    if (calConnected === '1') {
+      setMessage(
+        `Google Calendar conectado${calEmail ? ` (${calEmail})` : ''}. Sincronizando eventos…`,
+      );
+      pendingCalendarPostConnectSyncRef.current = true;
+      setTab('calendario');
+    } else if (calErr) {
+      setError(calErr);
+      setTab('calendario');
+    } else if (connected === '1') {
       setMessage(
         `Google Drive conectado${driveEmail ? ` (${driveEmail})` : ''}.`,
       );
@@ -158,6 +173,10 @@ export default function App() {
     params.delete('drive_email');
     params.delete('drive_inst');
     params.delete('drive_oauth_error');
+    params.delete('calendar_connected');
+    params.delete('calendar_email');
+    params.delete('calendar_scope');
+    params.delete('calendar_oauth_error');
     const qs = params.toString();
     const cleanUrl = `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash || ''}`;
     window.history.replaceState({}, '', cleanUrl);
@@ -288,7 +307,7 @@ export default function App() {
 
   const loadWorkspaceBase = useCallback(async () => {
     if (!isAuthorizedWorker) return;
-    const [statsData, favsData, eventsData, syncData, driveSt] = await Promise.all([
+    const [statsData, favsData, eventsData, syncData, driveSt, calSyncSt] = await Promise.all([
       api.getOverviewStats(),
       api.listFavorites(),
       api.events(),
@@ -296,12 +315,16 @@ export default function App() {
       typeof api.getGoogleDriveStatus === 'function'
         ? api.getGoogleDriveStatus()
         : Promise.resolve(null),
+      typeof api.getGoogleCalendarSyncState === 'function'
+        ? api.getGoogleCalendarSyncState()
+        : Promise.resolve(null),
     ]);
     setStats(statsData);
     setFavorites(favsData);
     setEvents(eventsData.eventos);
     setSyncState(syncData);
     setDriveStatus(driveSt);
+    setCalendarSyncState(calSyncSt);
   }, [isAuthorizedWorker]);
 
   useEffect(() => {
@@ -678,36 +701,73 @@ export default function App() {
     }
 
     if (modal === 'new-event') {
-      await runMutation(
+      const created = await runMutation(
         () => api.createEvent({
           titulo: form.titulo || '',
           descripcion: form.descripcion || '',
           responsable: form.responsable || 'Equipo CEMIPRE',
+          etiqueta: form.etiqueta || 'General',
+          color: form.color || '',
           inicio: form.inicio,
           fin: form.fin,
         }, actor),
         'Evento creado en el calendario compartido.',
       );
+      if (
+        created?.id
+        && hasGoogleCalendarScope(driveStatus)
+        && calendarSyncState?.sync_direction !== 'import_only'
+        && typeof api.pushEventToGoogleCalendar === 'function'
+      ) {
+        api.pushEventToGoogleCalendar(created.id)
+          .then(() => setReload((n) => n + 1))
+          .catch(() => {});
+      }
     }
 
     if (modal === 'edit-event') {
-      await runMutation(
+      const updated = await runMutation(
         () => api.updateEvent(form.id, {
           titulo: form.titulo || '',
           descripcion: form.descripcion || '',
           responsable: form.responsable || 'Equipo CEMIPRE',
+          etiqueta: form.etiqueta || 'General',
+          color: form.color || '',
           inicio: form.inicio,
           fin: form.fin,
         }, actor),
         'Evento actualizado.',
       );
+      if (
+        updated?.id
+        && hasGoogleCalendarScope(driveStatus)
+        && (updated.google_event_id || calendarSyncState?.sync_direction !== 'import_only')
+        && typeof api.pushEventToGoogleCalendar === 'function'
+      ) {
+        api.pushEventToGoogleCalendar(updated.id)
+          .then(() => setReload((n) => n + 1))
+          .catch(() => {});
+      }
     }
 
     if (modal === 'delete-event') {
-      await runMutation(
+      const googleMeta = {
+        google_event_id: form.google_event_id || '',
+        google_calendar_id: form.google_calendar_id || '',
+      };
+      const res = await runMutation(
         () => api.deleteEvent(form.id, form.titulo, actor),
         'Evento eliminado del calendario.',
       );
+      if (
+        res !== null
+        && googleMeta.google_event_id
+        && googleMeta.google_calendar_id
+        && hasGoogleCalendarScope(driveStatus)
+        && typeof api.deleteEventFromGoogleCalendar === 'function'
+      ) {
+        api.deleteEventFromGoogleCalendar(googleMeta).catch(() => {});
+      }
     }
 
     if (modal === 'profile-settings' && perfil) {
@@ -803,6 +863,82 @@ export default function App() {
       setDriveAuthBusy(false);
     }
   }
+
+  async function handleConnectGoogleCalendar() {
+    if (typeof api.startGoogleCalendarOAuth !== 'function') return;
+    setError('');
+    setCalendarSyncBusy(true);
+    try {
+      await api.startGoogleCalendarOAuth({ set_institutional: false });
+    } catch (err) {
+      setError(err.message);
+      setCalendarSyncBusy(false);
+    }
+  }
+
+  const handleSyncGoogleCalendar = useCallback(async ({ silent = false } = {}) => {
+    if (typeof api.syncGoogleCalendar !== 'function') return null;
+    if (!silent) {
+      setError('');
+      setMessage('');
+    }
+    setCalendarSyncBusy(true);
+    try {
+      const res = await api.syncGoogleCalendar({ push_local: true });
+      if (res?.ultimo_estado && !silent) {
+        setMessage(res.ultimo_estado);
+      } else if (!silent) {
+        setMessage('Sincronización con Google Calendar completada.');
+      }
+      setReload((n) => n + 1);
+      return res;
+    } catch (err) {
+      setError(err.message);
+      return null;
+    } finally {
+      setCalendarSyncBusy(false);
+    }
+  }, []);
+
+  const handleListGoogleCalendars = useCallback(async () => {
+    if (typeof api.listGoogleCalendars !== 'function') {
+      return { calendars: [], sync_state: null };
+    }
+    return await api.listGoogleCalendars();
+  }, []);
+
+  const handleSaveGoogleCalendarConfig = useCallback(async (config) => {
+    if (typeof api.saveGoogleCalendarConfig !== 'function') return false;
+    setError('');
+    setMessage('');
+    setCalendarSyncBusy(true);
+    try {
+      const saved = await api.saveGoogleCalendarConfig(config);
+      if (saved?.sync_state) setCalendarSyncState(saved.sync_state);
+      if (typeof api.syncGoogleCalendar === 'function') {
+        const res = await api.syncGoogleCalendar({ push_local: config.sync_direction === 'bidirectional' });
+        setMessage(res?.ultimo_estado || 'Configuración guardada y calendario sincronizado.');
+      } else {
+        setMessage('Configuración de Google Calendar guardada.');
+      }
+      setReload((n) => n + 1);
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    } finally {
+      setCalendarSyncBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthorizedWorker || !driveStatus) return;
+    if (!pendingCalendarPostConnectSyncRef.current) return;
+    pendingCalendarPostConnectSyncRef.current = false;
+    if (hasGoogleCalendarScope(driveStatus)) {
+      handleSyncGoogleCalendar({ silent: false });
+    }
+  }, [isAuthorizedWorker, driveStatus, handleSyncGoogleCalendar]);
 
   async function handleDisconnectGoogleDrive() {
     if (typeof api.disconnectGoogleDrive !== 'function') return;
@@ -1183,7 +1319,17 @@ export default function App() {
               )}
 
               {tab === 'calendario' && (
-                <CalendarioView events={events} onOpenModal={openModal} />
+                <CalendarioView
+                  events={events}
+                  onOpenModal={openModal}
+                  driveStatus={driveStatus}
+                  calendarSyncState={calendarSyncState}
+                  calendarSyncBusy={calendarSyncBusy}
+                  onConnectGoogleCalendar={handleConnectGoogleCalendar}
+                  onSyncGoogleCalendar={handleSyncGoogleCalendar}
+                  onListGoogleCalendars={handleListGoogleCalendars}
+                  onSaveGoogleCalendarConfig={handleSaveGoogleCalendarConfig}
+                />
               )}
 
               {tab === 'actividad' && (

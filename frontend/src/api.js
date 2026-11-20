@@ -21,7 +21,18 @@ export const supabase = isSupabaseConfigured
     })
   : null;
 
-export const GOOGLE_DRIVE_OAUTH_SCOPES = 'https://www.googleapis.com/auth/drive';
+export const GOOGLE_CALENDAR_OAUTH_SCOPE = 'https://www.googleapis.com/auth/calendar';
+export const GOOGLE_DRIVE_OAUTH_SCOPES = `https://www.googleapis.com/auth/drive ${GOOGLE_CALENDAR_OAUTH_SCOPE}`;
+
+export function hasGoogleCalendarScope(driveStatus) {
+  if (!driveStatus) return false;
+  if (driveStatus.tiene_calendar_scope) return true;
+  if (driveStatus.conectado && String(driveStatus.scopes || '').toLowerCase().includes('calendar')) {
+    return true;
+  }
+  if (driveStatus.institucional?.tiene_calendar_scope) return true;
+  return false;
+}
 
 export function buildGoogleOAuthOptions({ withDrive = true, redirectTo = '' } = {}) {
   const options = {
@@ -834,69 +845,167 @@ export const api = {
     });
   },
 
-  // --- Eventos / Calendario (CRUD completo) ---
+  // --- Eventos / Calendario (CRUD completo + etiquetas + Google Calendar) ---
   async events() {
     const client = requireClient();
     const { data, error } = await client
       .from('eventos')
-      .select('id, titulo, descripcion, inicio, fin, responsable, creado')
+      .select(
+        'id, titulo, descripcion, inicio, fin, responsable, creado, etiqueta, color, todo_el_dia, origen, google_event_id, google_calendar_id, google_calendar_name, google_html_link',
+      )
       .order('inicio', { ascending: true });
-    if (error) throw new Error(await formatApiError(error));
+    if (error) {
+      const missingCol = error.code === '42703'
+        || error.code === 'PGRST204'
+        || /column .* does not exist|Could not find .* column/i.test(error.message || '');
+      if (missingCol) {
+        const legacy = await client
+          .from('eventos')
+          .select('id, titulo, descripcion, inicio, fin, responsable, creado')
+          .order('inicio', { ascending: true });
+        if (legacy.error) throw new Error(await formatApiError(legacy.error));
+        return { eventos: legacy.data ?? [] };
+      }
+      throw new Error(await formatApiError(error));
+    }
     return { eventos: data ?? [] };
   },
 
-  async createEvent({ titulo, descripcion = '', inicio, fin, responsable = 'Equipo CEMIPRE' }, actor) {
+  async createEvent(
+    {
+      titulo,
+      descripcion = '',
+      inicio,
+      fin,
+      responsable = 'Equipo CEMIPRE',
+      etiqueta = 'General',
+      color = '',
+    },
+    actor,
+  ) {
     const client = requireClient();
     const checkTitulo = validateTextLength(titulo, 160, 'El nombre del evento');
     if (!checkTitulo.valid) throw new Error(checkTitulo.error);
     const checkOwner = validateTextLength(responsable || 'Equipo CEMIPRE', 120, 'El responsable');
     if (!checkOwner.valid) throw new Error(checkOwner.error);
+    const checkLabel = validateTextLength(etiqueta || 'General', 60, 'La etiqueta');
+    if (!checkLabel.valid) throw new Error(checkLabel.error);
     const checkDates = validateEventDates(inicio, fin);
     if (!checkDates.valid) throw new Error(checkDates.error);
     if (typeof descripcion !== 'string' || descripcion.length > 2000) {
       throw new Error('La descripción no debe superar 2000 caracteres.');
     }
+    const cleanColor = /^#[0-9a-fA-F]{6}$/.test(String(color || '').trim())
+      ? String(color).trim().toLowerCase()
+      : '';
 
-    const { data, error } = await client
+    const basePayload = {
+      titulo: checkTitulo.value,
+      descripcion: descripcion.trim(),
+      inicio: checkDates.startIso,
+      fin: checkDates.endIso,
+      responsable: checkOwner.value,
+    };
+
+    let { data, error } = await client
       .from('eventos')
       .insert({
-        titulo: checkTitulo.value,
-        descripcion: descripcion.trim(),
-        inicio: checkDates.startIso,
-        fin: checkDates.endIso,
-        responsable: checkOwner.value,
+        ...basePayload,
+        etiqueta: checkLabel.value,
+        color: cleanColor,
+        origen: 'cemipre',
       })
-      .select('id, titulo, descripcion, inicio, fin, responsable')
+      .select(
+        'id, titulo, descripcion, inicio, fin, responsable, etiqueta, color, todo_el_dia, origen, google_event_id, google_calendar_id, google_calendar_name, google_html_link',
+      )
       .single();
+
+    if (
+      error
+      && (error.code === '42703'
+        || error.code === 'PGRST204'
+        || /column .* does not exist|Could not find .* column/i.test(error.message || ''))
+    ) {
+      const legacy = await client
+        .from('eventos')
+        .insert(basePayload)
+        .select('id, titulo, descripcion, inicio, fin, responsable')
+        .single();
+      data = legacy.data;
+      error = legacy.error;
+    }
+
     if (error) throw new Error(await formatApiError(error));
     await recordActivity(`Se creó el evento "${data.titulo}".`, { actor });
     return data;
   },
 
-  async updateEvent(id, { titulo, descripcion = '', inicio, fin, responsable = 'Equipo CEMIPRE' }, actor) {
+  async updateEvent(
+    id,
+    {
+      titulo,
+      descripcion = '',
+      inicio,
+      fin,
+      responsable = 'Equipo CEMIPRE',
+      etiqueta = 'General',
+      color = '',
+    },
+    actor,
+  ) {
     const client = requireClient();
     const checkTitulo = validateTextLength(titulo, 160, 'El nombre del evento');
     if (!checkTitulo.valid) throw new Error(checkTitulo.error);
     const checkOwner = validateTextLength(responsable || 'Equipo CEMIPRE', 120, 'El responsable');
     if (!checkOwner.valid) throw new Error(checkOwner.error);
+    const checkLabel = validateTextLength(etiqueta || 'General', 60, 'La etiqueta');
+    if (!checkLabel.valid) throw new Error(checkLabel.error);
     const checkDates = validateEventDates(inicio, fin);
     if (!checkDates.valid) throw new Error(checkDates.error);
     if (typeof descripcion !== 'string' || descripcion.length > 2000) {
       throw new Error('La descripción no debe superar 2000 caracteres.');
     }
+    const cleanColor = /^#[0-9a-fA-F]{6}$/.test(String(color || '').trim())
+      ? String(color).trim().toLowerCase()
+      : '';
 
-    const { data, error } = await client
+    const basePayload = {
+      titulo: checkTitulo.value,
+      descripcion: descripcion.trim(),
+      inicio: checkDates.startIso,
+      fin: checkDates.endIso,
+      responsable: checkOwner.value,
+    };
+
+    let { data, error } = await client
       .from('eventos')
       .update({
-        titulo: checkTitulo.value,
-        descripcion: descripcion.trim(),
-        inicio: checkDates.startIso,
-        fin: checkDates.endIso,
-        responsable: checkOwner.value,
+        ...basePayload,
+        etiqueta: checkLabel.value,
+        color: cleanColor,
       })
       .eq('id', id)
-      .select('id, titulo, descripcion, inicio, fin, responsable')
+      .select(
+        'id, titulo, descripcion, inicio, fin, responsable, etiqueta, color, todo_el_dia, origen, google_event_id, google_calendar_id, google_calendar_name, google_html_link',
+      )
       .single();
+
+    if (
+      error
+      && (error.code === '42703'
+        || error.code === 'PGRST204'
+        || /column .* does not exist|Could not find .* column/i.test(error.message || ''))
+    ) {
+      const legacy = await client
+        .from('eventos')
+        .update(basePayload)
+        .eq('id', id)
+        .select('id, titulo, descripcion, inicio, fin, responsable')
+        .single();
+      data = legacy.data;
+      error = legacy.error;
+    }
+
     if (error) throw new Error(await formatApiError(error));
     await recordActivity(`Se actualizó el evento "${data.titulo}".`, { actor });
     return data;
@@ -907,6 +1016,123 @@ export const api = {
     const { error } = await client.from('eventos').delete().eq('id', id);
     if (error) throw new Error(await formatApiError(error));
     await recordActivity(`Se eliminó el evento "${titulo || id}".`, { actor });
+  },
+
+  async startGoogleCalendarOAuth({ set_institutional = false } = {}) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('google-drive-auth', {
+      body: {
+        action: 'start-oauth',
+        purpose: 'calendar',
+        set_institutional: Boolean(set_institutional),
+        return_to: window.location.origin,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo iniciar la autorización con Google Calendar.'));
+    }
+    if (!data?.auth_url) {
+      throw new Error('El servidor no devolvió la URL de autorización de Google.');
+    }
+    window.location.assign(data.auth_url);
+    return data;
+  },
+
+  async getGoogleCalendarSyncState() {
+    const client = requireClient();
+    const { data, error } = await client
+      .from('google_calendar_sync_state')
+      .select('id, calendars, sync_direction, target_calendar_id, target_calendar_name, auto_sync_enabled, sync_en_curso, ultima_sincronizacion, ultimo_estado, actualizado')
+      .eq('id', 'global')
+      .maybeSingle();
+    if (error) {
+      if (
+        error.code === '42P01'
+        || error.code === 'PGRST205'
+        || /relation .* does not exist|Could not find the table/i.test(error.message || '')
+      ) {
+        return null;
+      }
+      throw new Error(await formatApiError(error));
+    }
+    return data;
+  },
+
+  async listGoogleCalendars() {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('sync-google-calendar', {
+      body: { action: 'list-calendars' },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo cargar tu lista de Google Calendar.'));
+    }
+    return data;
+  },
+
+  async saveGoogleCalendarConfig({
+    calendars = [],
+    sync_direction = 'bidirectional',
+    target_calendar_id = 'primary',
+    target_calendar_name = 'Principal',
+  } = {}) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('sync-google-calendar', {
+      body: {
+        action: 'save-config',
+        calendars,
+        sync_direction,
+        target_calendar_id,
+        target_calendar_name,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo guardar la configuración de Google Calendar.'));
+    }
+    return data;
+  },
+
+  async syncGoogleCalendar({ push_local = true } = {}) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('sync-google-calendar', {
+      body: {
+        action: 'sync',
+        push_local: Boolean(push_local),
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo sincronizar con Google Calendar.'));
+    }
+    return data;
+  },
+
+  async pushEventToGoogleCalendar(eventoId) {
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('sync-google-calendar', {
+      body: {
+        action: 'push-event',
+        evento_id: eventoId,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo sincronizar el evento con Google Calendar.'));
+    }
+    return data;
+  },
+
+  async deleteEventFromGoogleCalendar({ google_event_id, google_calendar_id }) {
+    if (!google_event_id || !google_calendar_id) return { ok: true, skipped: true };
+    const client = requireClient();
+    const { data, error } = await client.functions.invoke('sync-google-calendar', {
+      body: {
+        action: 'delete-event',
+        google_event_id,
+        google_calendar_id,
+      },
+    });
+    if (error) {
+      throw new Error(await formatApiError(error, 'No se pudo eliminar el evento en Google Calendar.'));
+    }
+    return data;
   },
 
   // --- Actividad (Paginada) ---

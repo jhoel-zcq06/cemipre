@@ -425,6 +425,7 @@ describe('Flujo de resumen IA en App', () => {
     fireEvent.click(screen.getByRole('button', { name: '+ Evento este día' }));
     const titleInput = await screen.findByLabelText('Nombre del evento');
     fireEvent.change(titleInput, { target: { value: 'Coordinación semanal' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Taller' }));
     fireEvent.click(screen.getByRole('button', { name: 'Crear evento' }));
 
     await waitFor(() => {
@@ -432,6 +433,7 @@ describe('Flujo de resumen IA en App', () => {
         expect.objectContaining({
           titulo: 'Coordinación semanal',
           responsable: 'Equipo CEMIPRE',
+          etiqueta: 'Taller',
         }),
         expect.objectContaining({ id: 'u-1' }),
       );

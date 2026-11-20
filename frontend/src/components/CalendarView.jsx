@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { hasGoogleCalendarScope } from '../api.js';
 import {
   HOURS_OF_DAY,
   WEEKDAYS_LONG,
@@ -6,6 +7,8 @@ import {
   addDays,
   addMonths,
   buildDefaultSlotRange,
+  collectCalendarLabels,
+  filterEventsByVisibleLabels,
   formatDayTitle,
   formatMonthTitle,
   formatShortDayLabel,
@@ -18,22 +21,52 @@ import {
   getTodayDateKey,
   getWeekDays,
   getWeekdayIndex,
+  hexToToneStyle,
   layoutTimedEventsForDay,
   normalizeEvents,
   parseDateKey,
   toDateKey,
+  toLabelKey,
 } from '../calendarUtils.js';
-import { formatDateTime, toDateTimeLocalInput } from './SharedUI.jsx';
+import { Notice, formatDateTime, toDateTimeLocalInput } from './SharedUI.jsx';
 
 const WEEK_HOUR_HEIGHT = 52;
 const DAY_HOUR_HEIGHT = 56;
 const MAX_MONTH_CHIPS = 3;
+const HIDDEN_LABELS_STORAGE_KEY = 'cemipre.calendar.hiddenLabels.v1';
 
 const CALENDAR_VIEWS = [
   { id: 'month', label: 'Mensual' },
   { id: 'week', label: 'Semanal' },
   { id: 'day', label: 'Día' },
 ];
+
+function readHiddenLabelsFromStorage() {
+  if (typeof window === 'undefined' || !window.localStorage) return new Set();
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_LABELS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((item) => typeof item === 'string' && item.trim()));
+  } catch {
+    return new Set();
+  }
+}
+
+function writeHiddenLabelsToStorage(hiddenSet) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    const list = Array.from(hiddenSet);
+    if (list.length === 0) {
+      window.localStorage.removeItem(HIDDEN_LABELS_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(HIDDEN_LABELS_STORAGE_KEY, JSON.stringify(list));
+    }
+  } catch {
+    // Ignorar errores de cuota o modo privado
+  }
+}
 
 function MiniCalendar({
   miniMonth,
@@ -121,7 +154,244 @@ function MiniCalendar({
   );
 }
 
-export function CalendarioView({ events = [], onOpenModal, initialDate }) {
+function GoogleCalendarConfigPanel({
+  syncState,
+  busy,
+  onListGoogleCalendars,
+  onSaveConfig,
+  onConnectGoogleCalendar,
+  onClose,
+}) {
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [availableCalendars, setAvailableCalendars] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(() => new Set(
+    Array.isArray(syncState?.calendars) ? syncState.calendars.map((c) => c.id) : [],
+  ));
+  const [syncDirection, setSyncDirection] = useState(syncState?.sync_direction || 'bidirectional');
+  const [targetCalendarId, setTargetCalendarId] = useState(syncState?.target_calendar_id || 'primary');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (typeof onListGoogleCalendars !== 'function') {
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setLoadError('');
+      try {
+        const res = await onListGoogleCalendars();
+        if (cancelled) return;
+        const cals = Array.isArray(res?.calendars) ? res.calendars : [];
+        setAvailableCalendars(cals);
+        const savedList = Array.isArray(res?.sync_state?.calendars)
+          ? res.sync_state.calendars
+          : (Array.isArray(syncState?.calendars) ? syncState.calendars : []);
+        if (savedList.length > 0) {
+          setSelectedIds(new Set(savedList.map((c) => c.id)));
+        } else {
+          const primary = cals.find((c) => c.primary) || cals[0];
+          if (primary) setSelectedIds(new Set([primary.id]));
+        }
+        if (res?.sync_state?.sync_direction) {
+          setSyncDirection(res.sync_state.sync_direction);
+        }
+        const savedTarget = res?.sync_state?.target_calendar_id || syncState?.target_calendar_id;
+        if (savedTarget && cals.some((c) => c.id === savedTarget)) {
+          setTargetCalendarId(savedTarget);
+        } else {
+          const writablePrimary = cals.find((c) => c.primary && c.writable) || cals.find((c) => c.writable);
+          if (writablePrimary) setTargetCalendarId(writablePrimary.id);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setLoadError(err?.message || 'No se pudo cargar la lista de Google Calendar.');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [onListGoogleCalendars, syncState]);
+
+  const writableCalendars = useMemo(
+    () => availableCalendars.filter((c) => c.writable),
+    [availableCalendars],
+  );
+
+  function toggleCalendar(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    if (typeof onSaveConfig !== 'function') return;
+    setSaving(true);
+    try {
+      const chosen = availableCalendars
+        .filter((c) => selectedIds.has(c.id))
+        .map((c) => ({
+          id: c.id,
+          summary: c.summary,
+          backgroundColor: c.backgroundColor,
+          primary: c.primary,
+          accessRole: c.accessRole,
+        }));
+      const targetCal = writableCalendars.find((c) => c.id === targetCalendarId)
+        || writableCalendars[0]
+        || chosen[0];
+      const ok = await onSaveConfig({
+        calendars: chosen,
+        sync_direction: syncDirection,
+        target_calendar_id: targetCal?.id || 'primary',
+        target_calendar_name: targetCal?.summary || 'Principal',
+      });
+      if (ok) onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="cal-google-config" role="region" aria-label="Configuración de sincronización con Google Calendar">
+      <div className="cal-google-config-head">
+        <div>
+          <h3>Sincronización con Google Calendar</h3>
+          <p className="muted">
+            Elige qué calendarios de Google se sincronizan con la agenda compartida de CEMIPRE.
+          </p>
+        </div>
+        <button type="button" className="btn btn-tiny" onClick={onClose}>
+          Cerrar
+        </button>
+      </div>
+
+      {loadError && (
+        <Notice kind="warn">
+          {loadError}{' '}
+          {onConnectGoogleCalendar && (
+            <button
+              type="button"
+              className="inline-button"
+              onClick={() => onConnectGoogleCalendar()}
+            >
+              Autorizar Google Calendar
+            </button>
+          )}
+        </Notice>
+      )}
+
+      {loading ? (
+        <p className="muted">Cargando tus calendarios de Google…</p>
+      ) : availableCalendars.length === 0 ? (
+        <p className="muted">No se encontraron calendarios disponibles en la cuenta Google conectada.</p>
+      ) : (
+        <form onSubmit={handleSubmit} className="cal-google-config-form">
+          <fieldset className="cal-google-fieldset">
+            <legend>Calendarios a sincronizar</legend>
+            <div className="cal-google-cal-list">
+              {availableCalendars.map((cal) => {
+                const checked = selectedIds.has(cal.id);
+                return (
+                  <label key={cal.id} className="cal-google-cal-option">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleCalendar(cal.id)}
+                    />
+                    <span
+                      className="cal-label-swatch"
+                      style={{ backgroundColor: cal.backgroundColor || '#4285f4' }}
+                      aria-hidden="true"
+                    />
+                    <span className="cal-google-cal-name">
+                      <strong>{cal.summary}</strong>
+                      <small>
+                        {cal.primary ? 'Principal' : (cal.writable ? 'Lectura y escritura' : 'Solo lectura')}
+                      </small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+
+          <div className="cal-google-config-controls">
+            <label className="cal-google-select-field">
+              <span>Modo de sincronización</span>
+              <select
+                className="role-select"
+                value={syncDirection}
+                onChange={(e) => setSyncDirection(e.target.value)}
+              >
+                <option value="bidirectional">Bidireccional (importa de Google y publica eventos de CEMIPRE)</option>
+                <option value="import_only">Solo importar eventos desde Google Calendar</option>
+              </select>
+            </label>
+
+            {syncDirection === 'bidirectional' && writableCalendars.length > 0 && (
+              <label className="cal-google-select-field">
+                <span>Calendario destino para nuevos eventos de CEMIPRE</span>
+                <select
+                  className="role-select"
+                  value={targetCalendarId}
+                  onChange={(e) => setTargetCalendarId(e.target.value)}
+                >
+                  {writableCalendars.map((cal) => (
+                    <option key={cal.id} value={cal.id}>
+                      {cal.summary}{cal.primary ? ' (Principal)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+
+          <div className="cal-detail-actions">
+            <button
+              type="submit"
+              className="btn btn-tiny btn-primary"
+              disabled={saving || busy || selectedIds.size === 0}
+              aria-busy={saving || busy}
+            >
+              {saving || busy ? 'Guardando y sincronizando…' : 'Guardar y sincronizar'}
+            </button>
+            {onConnectGoogleCalendar && (
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => onConnectGoogleCalendar()}
+              >
+                Cambiar cuenta Google
+              </button>
+            )}
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+export function CalendarioView({
+  events = [],
+  onOpenModal,
+  initialDate,
+  driveStatus = null,
+  calendarSyncState = null,
+  calendarSyncBusy = false,
+  onConnectGoogleCalendar,
+  onSyncGoogleCalendar,
+  onListGoogleCalendars,
+  onSaveGoogleCalendarConfig,
+}) {
   const [nowState, setNowState] = useState(() => ({
     todayKey: getTodayDateKey(),
     nowMinutes: getCurrentMinutesSantiago(),
@@ -129,6 +399,8 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
   const [view, setView] = useState('month');
   const [activeDateKey, setActiveDateKey] = useState(() => initialDate || getTodayDateKey());
   const [selectedEventId, setSelectedEventId] = useState(null);
+  const [hiddenLabels, setHiddenLabels] = useState(() => readHiddenLabelsFromStorage());
+  const [showGoogleConfig, setShowGoogleConfig] = useState(false);
   const [miniMonth, setMiniMonth] = useState(() => {
     const parsed = parseDateKey(initialDate || getTodayDateKey());
     return { year: parsed.year, month: parsed.month };
@@ -163,11 +435,48 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  const normalizedEvents = useMemo(() => normalizeEvents(events), [events]);
+  const allNormalizedEvents = useMemo(() => normalizeEvents(events), [events]);
+
+  const calendarLabels = useMemo(() => {
+    const base = collectCalendarLabels(allNormalizedEvents);
+    const byKey = new Map(base.map((item) => [item.key, item]));
+    const syncedCals = Array.isArray(calendarSyncState?.calendars) ? calendarSyncState.calendars : [];
+    for (const cal of syncedCals) {
+      const summary = String(cal?.summary || '').trim();
+      if (!summary) continue;
+      const key = toLabelKey(summary);
+      if (!byKey.has(key)) {
+        const entry = {
+          key,
+          label: summary,
+          count: 0,
+          tone: 0,
+          color: cal.backgroundColor || '#4285f4',
+          customColor: cal.backgroundColor || '#4285f4',
+          hasGoogleEvents: true,
+          hasLocalEvents: false,
+          googleCalendarId: cal.id || '',
+        };
+        byKey.set(key, entry);
+        base.push(entry);
+      }
+    }
+    return base;
+  }, [allNormalizedEvents, calendarSyncState]);
+
+  const activeHiddenCount = useMemo(
+    () => calendarLabels.filter((item) => hiddenLabels.has(item.key)).length,
+    [calendarLabels, hiddenLabels],
+  );
+
+  const visibleEvents = useMemo(
+    () => filterEventsByVisibleLabels(allNormalizedEvents, hiddenLabels),
+    [allNormalizedEvents, hiddenLabels],
+  );
 
   const selectedEvent = useMemo(
-    () => normalizedEvents.find((ev) => ev.id === selectedEventId) || null,
-    [normalizedEvents, selectedEventId],
+    () => visibleEvents.find((ev) => ev.id === selectedEventId) || null,
+    [visibleEvents, selectedEventId],
   );
 
   const activeParts = useMemo(() => parseDateKey(activeDateKey), [activeDateKey]);
@@ -197,10 +506,10 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
     for (const key of weekDays) keys.add(key);
     for (const cell of miniCells) keys.add(cell.dateKey);
     for (const key of keys) {
-      map.set(key, getEventsForDay(normalizedEvents, key));
+      map.set(key, getEventsForDay(visibleEvents, key));
     }
     return map;
-  }, [normalizedEvents, activeDateKey, monthCells, weekDays, miniCells]);
+  }, [visibleEvents, activeDateKey, monthCells, weekDays, miniCells]);
 
   const activeDayEvents = eventsByDayMap.get(activeDateKey) || [];
 
@@ -209,13 +518,13 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
       const firstOfMonth = toDateKey(activeParts.year, activeParts.month, 1);
       const lastDayNum = new Date(Date.UTC(activeParts.year, activeParts.month, 0)).getUTCDate();
       const lastOfMonth = toDateKey(activeParts.year, activeParts.month, lastDayNum);
-      return getEventsInRange(normalizedEvents, firstOfMonth, lastOfMonth).length;
+      return getEventsInRange(visibleEvents, firstOfMonth, lastOfMonth).length;
     }
     if (view === 'week') {
-      return getEventsInRange(normalizedEvents, weekDays[0], weekDays[6]).length;
+      return getEventsInRange(visibleEvents, weekDays[0], weekDays[6]).length;
     }
     return activeDayEvents.length;
-  }, [view, activeParts.year, activeParts.month, normalizedEvents, weekDays, activeDayEvents.length]);
+  }, [view, activeParts.year, activeParts.month, visibleEvents, weekDays, activeDayEvents.length]);
 
   const weekBannerEventsByDay = useMemo(() => {
     const perDay = weekDays.map((key) => (eventsByDayMap.get(key) || []).filter((ev) => ev.isFullDayBanner));
@@ -239,9 +548,12 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
   );
 
   const upcomingEvents = useMemo(
-    () => normalizedEvents.filter((ev) => ev.effectiveEndKey >= nowState.todayKey).slice(0, 4),
-    [normalizedEvents, nowState.todayKey],
+    () => visibleEvents.filter((ev) => ev.effectiveEndKey >= nowState.todayKey).slice(0, 4),
+    [visibleEvents, nowState.todayKey],
   );
+
+  const calendarConnected = hasGoogleCalendarScope(driveStatus);
+  const showGoogleControls = Boolean(onConnectGoogleCalendar || onSyncGoogleCalendar);
 
   const periodTitle = view === 'month'
     ? formatMonthTitle(activeParts.year, activeParts.month)
@@ -279,13 +591,41 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
     setSelectedEventId(null);
   }
 
+  function toggleLabelVisibility(labelKey) {
+    setHiddenLabels((prev) => {
+      const next = new Set(prev);
+      if (next.has(labelKey)) next.delete(labelKey);
+      else next.add(labelKey);
+      writeHiddenLabelsToStorage(next);
+      return next;
+    });
+  }
+
+  function handleShowAllLabels() {
+    const empty = new Set();
+    setHiddenLabels(empty);
+    writeHiddenLabelsToStorage(empty);
+  }
+
+  function handleHideAllLabels() {
+    const all = new Set(calendarLabels.map((item) => item.key));
+    setHiddenLabels(all);
+    writeHiddenLabelsToStorage(all);
+    setSelectedEventId(null);
+  }
+
   function openCreateAt(dateKey, startHour = 9) {
-    onOpenModal('new-event', buildDefaultSlotRange(dateKey, startHour, 60));
+    onOpenModal('new-event', {
+      ...buildDefaultSlotRange(dateKey, startHour, 60),
+      etiqueta: 'General',
+    });
   }
 
   function openEditEvent(ev) {
     onOpenModal('edit-event', {
       ...ev.raw,
+      etiqueta: ev.etiqueta,
+      color: ev.customColor || '',
       inicio: toDateTimeLocalInput(ev.inicio),
       fin: toDateTimeLocalInput(ev.fin),
     });
@@ -343,28 +683,98 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
           </h2>
         </div>
 
-        <div className="cal-view-switcher" role="tablist" aria-label="Vista del calendario">
-          {CALENDAR_VIEWS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={view === item.id}
-              className={`cal-view-tab ${view === item.id ? 'active' : ''}`}
-              onClick={() => setView(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
+        <div className="cal-toolbar-right">
+          {showGoogleControls && (
+            <div className="cal-google-actions" aria-label="Sincronización con Google Calendar">
+              {calendarConnected ? (
+                <>
+                  <span className="status-badge badge-ok" title={calendarSyncState?.ultimo_estado || 'Google Calendar conectado'}>
+                    ● Google Calendar
+                  </span>
+                  {onSyncGoogleCalendar && (
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      disabled={calendarSyncBusy}
+                      aria-busy={calendarSyncBusy}
+                      onClick={() => onSyncGoogleCalendar()}
+                    >
+                      {calendarSyncBusy ? 'Sincronizando…' : '↻ Sincronizar'}
+                    </button>
+                  )}
+                  {onListGoogleCalendars && (
+                    <button
+                      type="button"
+                      className={`btn btn-tiny ${showGoogleConfig ? 'btn-primary' : ''}`}
+                      aria-expanded={showGoogleConfig}
+                      onClick={() => setShowGoogleConfig((v) => !v)}
+                    >
+                      ⚙ Calendarios
+                    </button>
+                  )}
+                </>
+              ) : (
+                onConnectGoogleCalendar && (
+                  <button
+                    type="button"
+                    className="btn btn-tiny btn-secondary"
+                    disabled={calendarSyncBusy}
+                    onClick={() => onConnectGoogleCalendar()}
+                  >
+                    ☁ Conectar Google Calendar
+                  </button>
+                )
+              )}
+            </div>
+          )}
+
+          <div className="cal-view-switcher" role="tablist" aria-label="Vista del calendario">
+            {CALENDAR_VIEWS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={view === item.id}
+                className={`cal-view-tab ${view === item.id ? 'active' : ''}`}
+                onClick={() => setView(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {showGoogleConfig && calendarConnected && (
+        <GoogleCalendarConfigPanel
+          syncState={calendarSyncState}
+          busy={calendarSyncBusy}
+          onListGoogleCalendars={onListGoogleCalendars}
+          onSaveConfig={onSaveGoogleCalendarConfig}
+          onConnectGoogleCalendar={onConnectGoogleCalendar}
+          onClose={() => setShowGoogleConfig(false)}
+        />
+      )}
 
       <div className="cal-meta-strip">
         <div className="cal-meta-badges">
           <span className="count-pill">{periodCountLabel}</span>
-          <span className="muted">Total agenda: {normalizedEvents.length}</span>
+          <span className="muted">
+            Mostrando {visibleEvents.length} de {allNormalizedEvents.length}
+          </span>
+          {activeHiddenCount > 0 && (
+            <span className="status-badge badge-warn">
+              {activeHiddenCount} {activeHiddenCount === 1 ? 'etiqueta oculta' : 'etiquetas ocultas'} ·{' '}
+              <button type="button" className="inline-button" onClick={handleShowAllLabels}>
+                Mostrar todas
+              </button>
+            </span>
+          )}
         </div>
         <span className="muted">
+          {calendarSyncState?.ultima_sincronizacion
+            ? `Google Calendar: ${formatDateTime(calendarSyncState.ultima_sincronizacion)} · `
+            : ''}
           Zona horaria América/Santiago · Haz clic en un día u horario para agendar
         </span>
       </div>
@@ -394,8 +804,8 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                       const isToday = cell.dateKey === nowState.todayKey;
                       const isSelected = cell.dateKey === activeDateKey;
                       const isWeekend = dayIdx >= 5;
-                      const visibleEvents = dayEvents.slice(0, MAX_MONTH_CHIPS);
-                      const hiddenCount = dayEvents.length - visibleEvents.length;
+                      const visibleDayEvents = dayEvents.slice(0, MAX_MONTH_CHIPS);
+                      const hiddenCount = dayEvents.length - visibleDayEvents.length;
 
                       return (
                         <div
@@ -449,12 +859,13 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                           </div>
 
                           <div className="cal-month-events">
-                            {visibleEvents.map((ev) => (
+                            {visibleDayEvents.map((ev) => (
                               <button
                                 key={`${cell.dateKey}-${ev.id}`}
                                 type="button"
                                 className={`cal-event-chip cal-tone-${ev.tone} ${selectedEventId === ev.id ? 'is-active' : ''}`}
-                                title={`${ev.titulo} (${ev.timeRangeLabel}) · ${ev.responsable}`}
+                                style={hexToToneStyle(ev.customColor)}
+                                title={`${ev.titulo} (${ev.timeRangeLabel}) · ${ev.etiqueta} · ${ev.responsable}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleSelectEvent(ev, cell.dateKey);
@@ -532,7 +943,8 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                                 key={`banner-${dateKey}-${ev.id}`}
                                 type="button"
                                 className={`cal-event-chip cal-tone-${ev.tone} ${selectedEventId === ev.id ? 'is-active' : ''}`}
-                                title={`${ev.titulo} (${ev.timeRangeLabel})`}
+                                style={hexToToneStyle(ev.customColor)}
+                                title={`${ev.titulo} (${ev.timeRangeLabel}) · ${ev.etiqueta}`}
                                 onClick={() => handleSelectEvent(ev, dateKey)}
                               >
                                 <span className="cal-chip-title">{ev.titulo}</span>
@@ -606,12 +1018,13 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                                 type="button"
                                 className={`cal-timed-event cal-tone-${ev.tone} ${selectedEventId === ev.id ? 'is-active' : ''}`}
                                 style={{
+                                  ...hexToToneStyle(ev.customColor),
                                   top: `${ev.topPct}%`,
                                   height: `${ev.heightPct}%`,
                                   left: `${ev.leftPct}%`,
                                   width: `${ev.widthPct}%`,
                                 }}
-                                title={`${ev.titulo} · ${ev.timeRangeLabel} · ${ev.responsable}`}
+                                title={`${ev.titulo} · ${ev.timeRangeLabel} · ${ev.etiqueta} · ${ev.responsable}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleSelectEvent(ev, dateKey);
@@ -620,7 +1033,7 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                                 <strong className="cal-timed-title">{ev.titulo}</strong>
                                 <span className="cal-timed-time">{ev.timeRangeLabel}</span>
                                 {ev.visualEndMin - ev.startMin >= 55 && (
-                                  <span className="cal-timed-owner">{ev.responsable}</span>
+                                  <span className="cal-timed-owner">{ev.etiqueta}</span>
                                 )}
                               </button>
                             ))}
@@ -651,8 +1064,8 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                     </div>
                     <p className="muted">
                       {activeDayEvents.length === 0
-                        ? 'Sin eventos programados para este día.'
-                        : `${activeDayEvents.length} ${activeDayEvents.length === 1 ? 'evento programado' : 'eventos programados'}.`}
+                        ? 'Sin eventos visibles para este día.'
+                        : `${activeDayEvents.length} ${activeDayEvents.length === 1 ? 'evento visible' : 'eventos visibles'}.`}
                     </p>
                   </div>
                 </div>
@@ -674,6 +1087,7 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                         key={`day-banner-${ev.id}`}
                         type="button"
                         className={`cal-event-chip cal-tone-${ev.tone} ${selectedEventId === ev.id ? 'is-active' : ''}`}
+                        style={hexToToneStyle(ev.customColor)}
                         onClick={() => handleSelectEvent(ev, activeDateKey)}
                       >
                         <span className="cal-chip-time">{ev.timeRangeLabel}</span>
@@ -731,6 +1145,7 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                           type="button"
                           className={`cal-timed-event cal-day-timed-event cal-tone-${ev.tone} ${selectedEventId === ev.id ? 'is-active' : ''}`}
                           style={{
+                            ...hexToToneStyle(ev.customColor),
                             top: `${ev.topPct}%`,
                             height: `${ev.heightPct}%`,
                             left: `${ev.leftPct}%`,
@@ -745,7 +1160,9 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                             <strong className="cal-timed-title">{ev.titulo}</strong>
                             <span className="cal-timed-time">{ev.timeRangeLabel}</span>
                           </div>
-                          <span className="cal-timed-owner">{ev.responsable}</span>
+                          <span className="cal-timed-owner">
+                            {ev.etiqueta} · {ev.responsable}
+                          </span>
                           {ev.descripcion && ev.visualEndMin - ev.startMin >= 55 && (
                             <span className="cal-timed-desc">{ev.descripcion}</span>
                           )}
@@ -759,7 +1176,7 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
           )}
         </div>
 
-        <aside className="cal-aside" aria-label="Detalle del día y eventos">
+        <aside className="cal-aside" aria-label="Detalle del día, etiquetas y eventos">
           {view !== 'month' && (
             <MiniCalendar
               miniMonth={miniMonth}
@@ -776,8 +1193,75 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
             />
           )}
 
+          {calendarLabels.length > 0 && (
+            <div className="cal-aside-card cal-labels-card" aria-label="Filtro de etiquetas y calendarios">
+              <div className="cal-aside-card-head">
+                <div>
+                  <h3>Etiquetas y calendarios</h3>
+                  <p className="muted cal-aside-subtitle">Marca o desmarca para mostrar u ocultar</p>
+                </div>
+                {activeHiddenCount > 0 ? (
+                  <button
+                    type="button"
+                    className="inline-button muted"
+                    onClick={handleShowAllLabels}
+                  >
+                    Mostrar todas
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="inline-button muted"
+                    onClick={handleHideAllLabels}
+                  >
+                    Ocultar todas
+                  </button>
+                )}
+              </div>
+
+              <div className="cal-labels-list">
+                {calendarLabels.map((item) => {
+                  const isVisible = !hiddenLabels.has(item.key);
+                  return (
+                    <label
+                      key={item.key}
+                      className={`cal-label-toggle ${isVisible ? '' : 'is-hidden'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="cal-label-checkbox"
+                        checked={isVisible}
+                        aria-label={`Mostrar etiqueta ${item.label}`}
+                        onChange={() => toggleLabelVisibility(item.key)}
+                        style={{ accentColor: item.color }}
+                      />
+                      <span
+                        className="cal-label-swatch"
+                        style={{
+                          backgroundColor: isVisible ? item.color : 'transparent',
+                          borderColor: item.color,
+                        }}
+                        aria-hidden="true"
+                      />
+                      <span className="cal-label-name">
+                        {item.label}
+                        {item.hasGoogleEvents && !item.hasLocalEvents && (
+                          <span className="cal-google-tag">Google</span>
+                        )}
+                      </span>
+                      <span className="cal-label-count">{item.count}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {selectedEvent && (
-            <div className={`cal-aside-card cal-event-detail-card cal-tone-${selectedEvent.tone}`}>
+            <div
+              className={`cal-aside-card cal-event-detail-card cal-tone-${selectedEvent.tone}`}
+              style={hexToToneStyle(selectedEvent.customColor)}
+            >
               <div className="cal-aside-card-head">
                 <span className="eyebrow">EVENTO SELECCIONADO</span>
                 <button
@@ -789,11 +1273,25 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                 </button>
               </div>
               <h3>{selectedEvent.titulo}</h3>
+              <div className="cal-event-badges">
+                <span
+                  className={`cal-label-pill cal-tone-${selectedEvent.tone}`}
+                  style={hexToToneStyle(selectedEvent.customColor)}
+                >
+                  <i className="cal-label-dot" style={{ backgroundColor: selectedEvent.color }} aria-hidden="true" />
+                  {selectedEvent.etiqueta}
+                </span>
+                {selectedEvent.isGoogleSynced && (
+                  <span className="status-badge badge-muted">Google Calendar</span>
+                )}
+              </div>
               <dl className="cal-detail-meta">
                 <div>
                   <dt>Horario</dt>
                   <dd>
-                    {formatDateTime(selectedEvent.inicio)} – {formatDateTime(selectedEvent.fin)}
+                    {selectedEvent.todoElDia
+                      ? selectedEvent.timeRangeLabel
+                      : `${formatDateTime(selectedEvent.inicio)} – ${formatDateTime(selectedEvent.fin)}`}
                   </dd>
                 </div>
                 <div>
@@ -822,6 +1320,16 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                 >
                   Eliminar
                 </button>
+                {selectedEvent.googleHtmlLink && (
+                  <a
+                    className="btn btn-tiny btn-outline"
+                    href={selectedEvent.googleHtmlLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Google Calendar ↗
+                  </a>
+                )}
               </div>
             </div>
           )}
@@ -853,7 +1361,11 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
 
             {activeDayEvents.length === 0 ? (
               <div className="cal-aside-empty">
-                <p className="muted">No hay eventos programados para este día.</p>
+                <p className="muted">
+                  {activeHiddenCount > 0
+                    ? 'No hay eventos visibles para este día con las etiquetas activas.'
+                    : 'No hay eventos programados para este día.'}
+                </p>
                 <button
                   type="button"
                   className="btn btn-tiny btn-secondary"
@@ -868,13 +1380,17 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                   <article
                     key={`agenda-${ev.id}`}
                     className={`cal-agenda-item cal-tone-${ev.tone} ${selectedEventId === ev.id ? 'is-active' : ''}`}
+                    style={hexToToneStyle(ev.customColor)}
                   >
                     <button
                       type="button"
                       className="cal-agenda-select"
                       onClick={() => setSelectedEventId(ev.id)}
                     >
-                      <span className="cal-agenda-time">{ev.timeRangeLabel}</span>
+                      <span className="cal-agenda-top">
+                        <span className="cal-agenda-time">{ev.timeRangeLabel}</span>
+                        <span className="cal-agenda-label">{ev.etiqueta}</span>
+                      </span>
                       <strong>{ev.titulo}</strong>
                       <small>
                         {ev.responsable}
@@ -919,12 +1435,15 @@ export function CalendarioView({ events = [], onOpenModal, initialDate }) {
                       className="cal-upcoming-btn"
                       onClick={() => handleSelectEvent(ev, ev.startKey)}
                     >
-                      <span className={`cal-upcoming-date cal-tone-${ev.tone}`}>
+                      <span
+                        className={`cal-upcoming-date cal-tone-${ev.tone}`}
+                        style={hexToToneStyle(ev.customColor)}
+                      >
                         {formatShortDayLabel(ev.startKey)}
                       </span>
                       <span className="cal-upcoming-info">
                         <strong>{ev.titulo}</strong>
-                        <small>{ev.timeRangeLabel} · {ev.responsable}</small>
+                        <small>{ev.etiqueta} · {ev.timeRangeLabel}</small>
                       </span>
                     </button>
                   </li>
