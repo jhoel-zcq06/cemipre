@@ -7,8 +7,8 @@ import {
   SyncStatusBadge,
   formatDate,
   formatDateTime,
-  toDateTimeLocalInput,
 } from './SharedUI.jsx';
+export { CalendarioView } from './CalendarView.jsx';
 
 export function UsuariosView({
   people,
@@ -255,7 +255,7 @@ export function UsuariosView({
                   id="nuevo-comentario"
                   rows={2}
                   maxLength={1500}
-                  placeholder="Anota coordinación interna del equipo (las notas clínicas oficiales siguen yendo en Google Docs)…"
+                  placeholder="Escribe una nota interna para el equipo…"
                   value={commentText}
                   onChange={(e) => setCommentText(e.target.value)}
                 />
@@ -419,75 +419,6 @@ export function BitacorasView({
   );
 }
 
-export function CalendarioView({ events, onOpenModal }) {
-  return (
-    <section className="panel wide-panel" aria-label="Calendario compartido del equipo">
-      <div className="panel-title">
-        <h2>Eventos programados</h2>
-        <span className="count-pill">{events.length}</span>
-      </div>
-      <p className="muted">
-        Agenda interna compartida en Supabase (zona horaria América/Santiago).
-      </p>
-
-      {events.length === 0 ? (
-        <div className="empty-state">No hay eventos. Crea el primero para comenzar.</div>
-      ) : (
-        <div className="event-list">
-          {events.map((event) => (
-            <article className="event-row" key={event.id}>
-              <div className="event-date">
-                <strong>
-                  {new Date(event.inicio).toLocaleDateString('es-CL', {
-                    timeZone: 'America/Santiago',
-                    day: '2-digit',
-                  })}
-                </strong>
-                <span>
-                  {new Date(event.inicio).toLocaleDateString('es-CL', {
-                    timeZone: 'America/Santiago',
-                    month: 'short',
-                  })}
-                </span>
-              </div>
-              <div className="event-body">
-                <h3>{event.titulo}</h3>
-                <p>{formatDateTime(event.inicio)} – {formatDateTime(event.fin)}</p>
-                <p>
-                  {event.responsable}
-                  {event.descripcion ? ` · ${event.descripcion}` : ''}
-                </p>
-              </div>
-              <div className="log-actions">
-                <button
-                  className="btn btn-tiny"
-                  type="button"
-                  onClick={() =>
-                    onOpenModal('edit-event', {
-                      ...event,
-                      inicio: toDateTimeLocalInput(event.inicio),
-                      fin: toDateTimeLocalInput(event.fin),
-                    })
-                  }
-                >
-                  Editar
-                </button>
-                <button
-                  className="btn btn-tiny btn-danger-outline"
-                  type="button"
-                  onClick={() => onOpenModal('delete-event', event)}
-                >
-                  Eliminar
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function ActividadView({ changes, activityMeta, onPageChange }) {
   return (
     <section className="panel wide-panel" aria-label="Registro de actividad y auditoría">
@@ -495,10 +426,9 @@ export function ActividadView({ changes, activityMeta, onPageChange }) {
         <h2>Registro de actividad</h2>
         <span className="count-pill">{activityMeta.total}</span>
       </div>
-      <Notice>
-        Auditoría de cambios en usuarios, bitácoras, eventos, sincronizaciones y generación de resúmenes IA.
-        Los cambios realizados directamente dentro de Google Docs se detectan y muestran en <strong>Avisos</strong>.
-      </Notice>
+      <p className="muted">
+        Las ediciones hechas directamente en Google Docs aparecen en <strong>Avisos</strong>.
+      </p>
 
       {changes.length === 0 ? (
         <div className="empty-state">Todavía no hay movimientos registrados.</div>
@@ -562,10 +492,9 @@ export function AvisosCorreoView({
         </div>
       </div>
 
-      <Notice>
-        La función programada <code>notificar-cambios</code> revisa periódicamente Google Drive Changes API,
-        agrupa autoguardados seguidos y envía correos <strong>sin contenido clínico sensible</strong>.
-      </Notice>
+      <p className="muted">
+        Correos enviados al detectar cambios en bitácoras.
+      </p>
 
       {notifications.length === 0 ? (
         <div className="empty-state">Aún no se registran notificaciones enviadas.</div>
@@ -628,7 +557,6 @@ export function CarpetasDriveView({
 
   const extractedInfo = extractDriveResourceInfo(extractorInput);
   const autoSyncActive = syncState?.auto_sync_enabled !== false;
-  const intervalMin = syncState?.auto_sync_interval_min || 5;
   const institutionalConnected = Boolean(driveStatus?.institucional?.conectado)
     || syncState?.connection_status === 'conectado';
   const institutionalNeedsReconnect = driveStatus?.institucional?.status === 'requiere_reconexion'
@@ -647,12 +575,12 @@ export function CarpetasDriveView({
   }
 
   return (
-    <section className="panel wide-panel" aria-label="Sincronización automática de carpetas Google Drive">
+    <section className="panel wide-panel" aria-label="Configuración de carpetas de Google Drive">
       <div className="panel-title-between">
         <div className="panel-title">
-          <h2>Sincronización automática con Google Drive</h2>
+          <h2>Google Drive</h2>
           <span className={`status-badge ${autoSyncActive ? 'badge-ok' : 'badge-warn'}`}>
-            {autoSyncActive ? `● Automática cada ${intervalMin} min` : '○ Automática pausada'}
+            {autoSyncActive ? '● Sincronización activa' : '○ Sincronización pausada'}
           </span>
         </div>
         <button
@@ -661,21 +589,15 @@ export function CarpetasDriveView({
           disabled={syncBusy}
           aria-busy={syncBusy}
           onClick={() => onSyncDrive({ root_folder_id: rootFolderId.trim() || undefined })}
-          title="La sincronización ocurre automáticamente; usa este botón solo para una comprobación inmediata"
+          title="Sincronizar carpetas y bitácoras ahora"
         >
-          {syncBusy ? 'Comprobando Drive…' : 'Comprobar ahora'}
+          {syncBusy ? 'Sincronizando…' : 'Sincronizar ahora'}
         </button>
       </div>
 
-      <Notice>
-        La plataforma sincroniza automáticamente carpetas, nuevos Google Docs, renombres y permisos
-        cada <strong>{intervalMin} minutos</strong> y al vincular fichas —{' '}
-        <strong>sin necesidad de dejar enlaces públicos</strong> («cualquier persona con el enlace»).
-      </Notice>
-
       {institutionalNeedsReconnect && (
         <Notice kind="warn">
-          La cuenta Google institucional de sincronización automática requiere reconexión.{' '}
+          La cuenta de Google Drive del equipo requiere reconexión.{' '}
           {isAdmin && onConnectGoogleDrive && (
             <button
               type="button"
@@ -683,7 +605,7 @@ export function CarpetasDriveView({
               disabled={driveAuthBusy}
               onClick={() => onConnectGoogleDrive({ set_institutional: true })}
             >
-              Reconectar cuenta institucional
+              Reconectar cuenta
             </button>
           )}
         </Notice>
@@ -692,7 +614,7 @@ export function CarpetasDriveView({
       <div className="drive-cards-grid">
         <article className="sync-summary-box drive-connection-card">
           <div className="panel-heading-inline">
-            <h3>Tu cuenta Google Drive</h3>
+            <h3>Tu cuenta de Google</h3>
             {driveStatus?.conectado ? (
               <span className="status-badge badge-ok">● Conectada</span>
             ) : driveStatus?.status === 'requiere_reconexion' ? (
@@ -703,12 +625,12 @@ export function CarpetasDriveView({
           </div>
           <p className="muted">
             {driveStatus?.conectado
-              ? `Sesión activa como ${driveStatus.google_email || 'cuenta Google'}. Puedes explorar y elegir carpetas o bitácoras privadas directamente desde Google Drive.`
-              : 'Conecta tu cuenta Google para explorar tus carpetas privadas y seleccionar bitácoras directamente sin copiar ni publicar enlaces.'}
+              ? `Conectada como ${driveStatus.google_email || 'cuenta Google'}.`
+              : 'Conecta tu cuenta de Google para seleccionar carpetas y documentos.'}
           </p>
           {driveStatus?.conectado && !driveStatus?.tiene_refresh_token && (
             <p className="form-hint form-hint-warn">
-              Tu sesión Google actual es temporal (~1 h). Pulsa «Autorizar acceso continuo» para mantener tus carpetas privadas sincronizadas en segundo plano.
+              Tu sesión de Google vence en 1 hora. Pulsa «Renovar conexión» para mantenerla activa.
             </p>
           )}
           <div className="detail-actions">
@@ -720,8 +642,8 @@ export function CarpetasDriveView({
                 onClick={() => onConnectGoogleDrive({ set_institutional: false })}
               >
                 {driveStatus?.conectado
-                  ? (driveStatus.tiene_refresh_token ? 'Reconectar mi Google' : 'Autorizar acceso continuo')
-                  : 'Conectar mi Google Drive'}
+                  ? (driveStatus.tiene_refresh_token ? 'Reconectar' : 'Renovar conexión')
+                  : 'Conectar Google Drive'}
               </button>
             )}
             {driveStatus?.conectado && onDisconnectGoogleDrive && (
@@ -739,9 +661,9 @@ export function CarpetasDriveView({
 
         <article className="sync-summary-box drive-connection-card">
           <div className="panel-heading-inline">
-            <h3>Sincronización automática del equipo</h3>
+            <h3>Cuenta del equipo</h3>
             {institutionalConnected ? (
-              <span className="status-badge badge-ok">● Operativa</span>
+              <span className="status-badge badge-ok">● Activa</span>
             ) : institutionalNeedsReconnect ? (
               <span className="status-badge badge-warn">! Requiere reconexión</span>
             ) : (
@@ -750,10 +672,10 @@ export function CarpetasDriveView({
           </div>
           <p className="muted">
             {institutionalEmail
-              ? `Cuenta principal CEMIPRE: ${institutionalEmail}. Sincroniza carpetas privadas del equipo y envía avisos automáticos 24/7.`
+              ? `Cuenta activa: ${institutionalEmail}.`
               : syncState?.auth_mode === 'service_account'
-                ? 'Operando actualmente con Service Account de respaldo. Un administrador puede conectar una cuenta Google Drive institucional para prescindir de permisos manuales.'
-                : 'Un administrador debe conectar la cuenta Google que tiene acceso privado a la carpeta raíz de CEMIPRE.'}
+                ? 'Usando conexión de respaldo. Un administrador puede conectar la cuenta Google del equipo.'
+                : 'Un administrador debe conectar la cuenta de Google del equipo.'}
           </p>
           {isAdmin && (
             <div className="detail-actions">
@@ -764,7 +686,7 @@ export function CarpetasDriveView({
                   disabled={driveAuthBusy}
                   onClick={() => onConnectGoogleDrive({ set_institutional: true })}
                 >
-                  {institutionalEmail ? 'Cambiar / reconectar cuenta CEMIPRE' : 'Conectar cuenta Google CEMIPRE'}
+                  {institutionalEmail ? 'Cambiar cuenta del equipo' : 'Conectar cuenta del equipo'}
                 </button>
               )}
               {driveStatus?.conectado
@@ -777,7 +699,7 @@ export function CarpetasDriveView({
                     disabled={driveAuthBusy}
                     onClick={onSetInstitutionalDrive}
                   >
-                    Usar mi cuenta conectada
+                    Usar mi cuenta
                   </button>
               )}
               {onToggleAutoSync && (
@@ -787,7 +709,7 @@ export function CarpetasDriveView({
                   disabled={driveAuthBusy}
                   onClick={() => onToggleAutoSync(!autoSyncActive)}
                 >
-                  {autoSyncActive ? 'Pausar auto-sync' : 'Activar auto-sync'}
+                  {autoSyncActive ? 'Pausar sincronización' : 'Activar sincronización'}
                 </button>
               )}
             </div>
@@ -797,7 +719,7 @@ export function CarpetasDriveView({
 
       <div className="sync-summary-box">
         <div className="panel-heading-inline">
-          <h3>Carpeta raíz automática de CEMIPRE</h3>
+          <h3>Carpeta raíz</h3>
           {isAdmin && onOpenDrivePicker && (
             <button
               type="button"
@@ -809,7 +731,7 @@ export function CarpetasDriveView({
                 target: 'root-folder',
               })}
             >
-              ☁ Elegir carpeta raíz desde Drive
+              ☁ Elegir carpeta raíz
             </button>
           )}
         </div>
@@ -817,17 +739,16 @@ export function CarpetasDriveView({
           {syncState?.root_folder_id
             ? (
               <>
-                Carpeta vinculada:{' '}
-                <strong>{syncState.root_folder_name || 'Carpeta raíz configurada'}</strong>{' '}
-                (<code>{syncState.root_folder_id}</code>). Las subcarpetas de usuarios y sus Google Docs se sincronizan automáticamente.
+                Carpeta seleccionada:{' '}
+                <strong>{syncState.root_folder_name || syncState.root_folder_id}</strong>.
               </>
             )
-            : 'Sin carpeta raíz seleccionada desde la plataforma (usará GOOGLE_DRIVE_ROOT_FOLDER_ID si está en secretos, o sincronizará las carpetas vinculadas en cada ficha).'}
+            : 'No hay carpeta raíz seleccionada.'}
         </p>
         {isAdmin && onSaveRootFolder && (
           <div className="drive-root-manual-row">
             <label className="sync-folder-input">
-              <span>O pegar URL/ID de carpeta raíz manualmente</span>
+              <span>Pegar enlace o ID de carpeta raíz</span>
               <input
                 type="text"
                 placeholder="Ej.: https://drive.google.com/drive/folders/... o 1AbCdEf..."
@@ -864,19 +785,19 @@ export function CarpetasDriveView({
 
       {syncState && (
         <div className="sync-summary-box">
-          <strong>Última sincronización automática registrada:</strong>{' '}
+          <strong>Última sincronización:</strong>{' '}
           <span>
             {syncState.ultima_sincronizacion
               ? formatDateTime(syncState.ultima_sincronizacion)
-              : 'Pendiente de primera ejecución'}
+              : 'Aún no realizada'}
           </span>
-          <p className="muted">{syncState.ultimo_estado || 'Listo para sincronizar automáticamente.'}</p>
+          {syncState.ultimo_estado && <p className="muted">{syncState.ultimo_estado}</p>}
         </div>
       )}
 
       {syncResult && (
         <div className="sync-report" aria-live="polite">
-          <h3>Resultado de la última comprobación</h3>
+          <h3>Resultado de la sincronización</h3>
           <div className="stats stats-4">
             <div className="stat-card"><span>Personas procesadas</span><strong>{syncResult.personas_procesadas}</strong></div>
             <div className="stat-card"><span>Docs nuevos</span><strong>{syncResult.nuevas_bitacoras}</strong></div>
@@ -896,7 +817,7 @@ export function CarpetasDriveView({
       )}
 
       <div className="section-heading">
-        <h3>Carpetas por usuario (página actual)</h3>
+        <h3>Carpetas por usuario</h3>
         <span>{people.length} usuarios</span>
       </div>
 
@@ -909,7 +830,7 @@ export function CarpetasDriveView({
               <small>
                 {p.drive_folder_id
                   ? `${p.drive_folder_name ? `${p.drive_folder_name} · ` : ''}ID: ${p.drive_folder_id}`
-                  : 'Sin carpeta Drive asignada (elige una desde Drive o usa la carpeta raíz automática)'}
+                  : 'Sin carpeta asignada'}
               </small>
             </div>
             <div className="log-actions">
@@ -942,7 +863,7 @@ export function CarpetasDriveView({
 
       <div className="id-extractor-box">
         <label className="sync-folder-input" htmlFor="drive-id-extractor-input">
-          <span>Extractor rápido de ID de Google Drive (alternativa manual si prefieres pegar un enlace)</span>
+          <span>Extractor rápido de ID de Google Drive</span>
           <input
             id="drive-id-extractor-input"
             type="text"
@@ -1028,10 +949,9 @@ export function AdministracionView({
           <h2>Aprobación de trabajadores y roles</h2>
           <span className="count-pill">{profiles.length}</span>
         </div>
-        <Notice kind="warn">
-          Solo cuentas con rol <strong>trabajador</strong> o <strong>admin</strong> pueden ver o modificar
-          registros clínicos y bitácoras. Las cuentas nuevas inician como <strong>pendiente</strong>.
-        </Notice>
+        <p className="muted">
+          Las cuentas nuevas inician como pendientes hasta que un administrador cambie su rol.
+        </p>
 
         <div className="logs-list">
           {profiles.map((prof) => {
@@ -1074,13 +994,13 @@ export function AdministracionView({
         </div>
       </section>
 
-      <section className="panel wide-panel" aria-label="Lista blanca de correos institucionales">
+      <section className="panel wide-panel" aria-label="Correos autorizados">
         <div className="panel-title">
-          <h2>Lista blanca automática de correos</h2>
+          <h2>Correos autorizados</h2>
           <span className="count-pill">{whitelist.length}</span>
         </div>
         <p className="muted">
-          Los correos agregados aquí reciben acceso automático al registrarse sin esperar aprobación manual.
+          Los correos en esta lista se aprueban automáticamente al registrarse.
         </p>
 
         <form onSubmit={handleWhitelistSubmit} className="whitelist-form">
@@ -1100,7 +1020,7 @@ export function AdministracionView({
             {canManageAdmins && <option value="admin">admin</option>}
           </select>
           <button type="submit" className="btn btn-primary" disabled={busy}>
-            Agregar a lista blanca
+            Agregar correo
           </button>
         </form>
 
@@ -1110,7 +1030,7 @@ export function AdministracionView({
               <article key={item.email} className="log-row">
                 <div className="log-body">
                   <strong>{item.email}</strong>
-                  <small>Rol automático: {item.rol}</small>
+                  <small>Rol: {item.rol}</small>
                 </div>
                 {item.rol === 'admin' && !canManageAdmins ? (
                   <span className="status-badge badge-muted">admin</span>

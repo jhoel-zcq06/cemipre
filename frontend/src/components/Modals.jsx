@@ -245,7 +245,7 @@ export function AppModal({
                 )
               ) : (
                 <p className="form-hint">
-                  Al elegir o vincular una carpeta privada de Google Drive, sus bitácoras se sincronizarán automáticamente sin necesidad de hacer el enlace público.
+                  Al vincular una carpeta, sus bitácoras se sincronizarán automáticamente.
                 </p>
               )}
             </>
@@ -285,7 +285,6 @@ export function AppModal({
                   >
                     ☁ Seleccionar desde Google Drive
                   </button>
-                  <span className="muted">Acceso privado con tu sesión Google</span>
                 </div>
               )}
 
@@ -308,7 +307,7 @@ export function AppModal({
                     {selectedDriveDocs.map((doc) => (
                       <li key={doc.id}>
                         <strong>{doc.name}</strong>
-                        <small>Google Docs privado · sincronizado al guardar</small>
+                        <small>Google Docs</small>
                       </li>
                     ))}
                   </ul>
@@ -351,10 +350,10 @@ export function AppModal({
                   </label>
                   <p className="form-hint">
                     {hasManualUrl
-                      ? 'Se vinculará el Google Doc existente que pegaste (sin crear archivos nuevos en Drive).'
+                      ? 'Se vinculará el documento existente y se sincronizará con Drive.'
                       : autoCreateDrive
-                        ? `Se creará en Drive la carpeta "${tituloPreview}" y dentro un Google Doc con el mismo nombre, quedando sincronizado automáticamente con este usuario.`
-                        : 'El ID del documento se extrae automáticamente para resúmenes IA y detección de cambios.'}
+                        ? `Se creará en Drive la carpeta "${tituloPreview}" con un documento del mismo nombre.`
+                        : 'Puedes pegar el enlace de un Google Doc o elegirlo desde Drive.'}
                   </p>
                 </>
               )}
@@ -436,7 +435,7 @@ export function AppModal({
               <input type="email" value={form.email || ''} disabled />
             </label>
             <label>
-              Nombre para auditoría y equipo
+              Nombre
               <input
                 data-autofocus="true"
                 maxLength={120}
@@ -468,8 +467,8 @@ export function AppModal({
                 </div>
                 <p className="muted">
                   {driveStatus?.conectado
-                    ? `Cuenta vinculada: ${driveStatus.google_email || form.email}${driveStatus.tiene_refresh_token ? ' (acceso continuo activo)' : ' (solo sesión temporal; reconecta para acceso continuo)'}.`
-                    : 'Conecta tu cuenta Google para seleccionar y leer carpetas o bitácoras privadas sin hacer los enlaces públicos.'}
+                    ? `Cuenta vinculada: ${driveStatus.google_email || form.email}${driveStatus.tiene_refresh_token ? '' : ' (sesión temporal; reconecta para mantenerla activa)'}.`
+                    : 'Conecta tu cuenta de Google para seleccionar carpetas y bitácoras.'}
                 </p>
                 <div className="detail-actions">
                   <button
@@ -479,7 +478,7 @@ export function AppModal({
                     onClick={() => onConnectGoogleDrive({ set_institutional: false })}
                   >
                     {driveStatus?.conectado
-                      ? (driveStatus.tiene_refresh_token ? 'Reconectar Google Drive' : 'Autorizar acceso continuo')
+                      ? (driveStatus.tiene_refresh_token ? 'Reconectar Google Drive' : 'Renovar conexión')
                       : 'Conectar Google Drive'}
                   </button>
                   {driveStatus?.conectado && onDisconnectGoogleDrive && (

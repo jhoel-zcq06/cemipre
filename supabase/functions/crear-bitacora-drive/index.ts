@@ -421,7 +421,7 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (insertErr) {
-      return errorResponse(`El documento se creó en Drive, pero falló al guardar en Supabase: ${insertErr.message}`, 500);
+      return errorResponse(`El documento se creó en Drive, pero no se pudo guardar en la plataforma: ${insertErr.message}`, 500);
     }
 
     await adminClient.from('actividad').insert({

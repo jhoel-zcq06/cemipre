@@ -130,8 +130,7 @@ export function SummaryPanel({ summary, loading, onGenerate, title = 'Resumen as
         <div>
           <h3>{title}</h3>
           <p>
-            Lee el contenido real de los Google Docs autorizados con minimización de datos.
-            Requiere revisión profesional antes de tomar decisiones.
+            Genera un resumen a partir de las bitácoras del usuario. Requiere revisión profesional.
           </p>
         </div>
         <button
@@ -153,7 +152,7 @@ export function SummaryPanel({ summary, loading, onGenerate, title = 'Resumen as
               {summary.nombre || 'Resumen'} ({summary.bitacoras_leidas}/{summary.cantidad_bitacoras} bitácoras leídas)
             </strong>
             <span className="muted">
-              {formatDateTime(summary.generado_en)} · Modelo: {summary.modelo}
+              {formatDateTime(summary.generado_en)}
             </span>
           </div>
 

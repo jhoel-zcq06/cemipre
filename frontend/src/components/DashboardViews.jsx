@@ -25,22 +25,22 @@ export function InicioView({
         <div className="stat-card">
           <span>Usuarios atendidos</span>
           <strong>{stats.totalPersonas}</strong>
-          <small>Fichas registradas en Supabase</small>
+          <small>Fichas registradas</small>
         </div>
         <div className="stat-card">
           <span>Bitácoras vinculadas</span>
           <strong>{stats.totalVinculadas}</strong>
-          <small>De {stats.totalBitacoras} bitácoras totales</small>
+          <small>De {stats.totalBitacoras} totales</small>
         </div>
         <div className="stat-card">
           <span>Eventos próximos</span>
           <strong>{stats.totalEventos}</strong>
-          <small>Agenda compartida del equipo</small>
+          <small>Agenda del equipo</small>
         </div>
         <div className="stat-card">
           <span>Tus favoritos</span>
           <strong>{favorites.length}</strong>
-          <small>Accesos rápidos guardados</small>
+          <small>Guardados por ti</small>
         </div>
       </section>
 
@@ -48,45 +48,44 @@ export function InicioView({
         <section className="panel padded-panel" aria-label="Accesos rápidos">
           <div className="panel-heading-inline">
             <h2>Acciones rápidas</h2>
-            <span className="muted">Flujo diario</span>
           </div>
           <div className="quick-actions-grid">
             <button type="button" className="quick-card" onClick={() => onNavigate('usuarios')}>
-              <strong>Explorar usuarios y bitácoras</strong>
-              <span>Buscar fichas, abrir Google Docs y dejar notas internas.</span>
+              <strong>Usuarios y bitácoras</strong>
+              <span>Ver fichas, documentos y notas internas.</span>
             </button>
             <button type="button" className="quick-card" onClick={() => onNavigate('resumenes')}>
-              <strong>Generar resumen con IA</strong>
-              <span>Síntesis automática desde los Google Docs reales del usuario.</span>
+              <strong>Resúmenes con IA</strong>
+              <span>Resumir las bitácoras de un usuario.</span>
             </button>
             <button type="button" className="quick-card" onClick={() => onNavigate('drive')}>
-              <strong>Google Drive automático</strong>
-              <span>Conexión Google privada, carpeta raíz y estado de sincronización automática.</span>
+              <strong>Carpetas Drive</strong>
+              <span>Configurar carpetas y conexión con Google Drive.</span>
             </button>
             <button type="button" className="quick-card" onClick={() => onNavigate('calendario')}>
-              <strong>Revisar calendario</strong>
-              <span>Coordinar reuniones y fechas clave de CEMIPRE.</span>
+              <strong>Calendario</strong>
+              <span>Ver y agendar reuniones del equipo.</span>
             </button>
           </div>
         </section>
 
         <section className="panel padded-panel" aria-label="Estado de sincronización con Google Drive">
           <div className="panel-heading-inline">
-            <h2>Google Drive automático</h2>
+            <h2>Google Drive</h2>
             <button type="button" className="btn btn-tiny" onClick={() => onNavigate('drive')}>
-              Configurar Drive
+              Configurar
             </button>
           </div>
           {needsReconnect ? (
             <Notice kind="warn">
-              La conexión de Google Drive requiere reconexión para mantener la sincronización automática.{' '}
+              La cuenta de Google Drive requiere reconexión.{' '}
               {onConnectGoogleDrive && (
                 <button
                   type="button"
                   className="inline-button"
                   onClick={() => onConnectGoogleDrive({ set_institutional: false })}
                 >
-                  Reconectar ahora
+                  Reconectar
                 </button>
               )}
             </Notice>
@@ -94,13 +93,13 @@ export function InicioView({
             <div className="sync-summary-box">
               <div className="panel-heading-inline">
                 <strong>
-                  {autoSyncActive ? 'Sincronización automática activa' : 'Sincronización automática pausada'}
+                  {autoSyncActive ? 'Sincronización activa' : 'Sincronización pausada'}
                 </strong>
                 <span className={`status-badge ${autoSyncActive ? 'badge-ok' : 'badge-warn'}`}>
-                  {autoSyncActive ? `● Cada ${syncState.auto_sync_interval_min || 5} min` : '○ Pausada'}
+                  {autoSyncActive ? '● Activa' : '○ Pausada'}
                 </span>
               </div>
-              <p><strong>Última revisión:</strong> {formatDateTime(syncState.ultima_sincronizacion)}</p>
+              <p><strong>Última sincronización:</strong> {formatDateTime(syncState.ultima_sincronizacion)}</p>
               {(syncState.root_folder_name || syncState.institutional_email) && (
                 <p className="muted">
                   {syncState.institutional_email ? `Cuenta: ${syncState.institutional_email}` : ''}
@@ -108,11 +107,11 @@ export function InicioView({
                   {syncState.root_folder_name ? `Carpeta raíz: ${syncState.root_folder_name}` : ''}
                 </p>
               )}
-              <p className="muted">{syncState.ultimo_estado || 'Estado operativo.'}</p>
+              {syncState.ultimo_estado && <p className="muted">{syncState.ultimo_estado}</p>}
             </div>
           ) : (
             <Notice kind="info">
-              Conecta tu cuenta Google en <strong>Carpetas Drive</strong> para activar la sincronización automática sin enlaces públicos.
+              Conecta tu cuenta de Google en <strong>Carpetas Drive</strong> para sincronizar las carpetas.
             </Notice>
           )}
 
@@ -263,7 +262,7 @@ export function ResumenesIAView({
               summary={summary}
               loading={summaryLoading}
               onGenerate={onGenerateSummary}
-              title="Síntesis clínica y administrativa con IA"
+              title="Resumen con IA"
             />
           </div>
         )}
@@ -280,7 +279,7 @@ export function FavoritosView({ favorites, onOpenUser, onRemoveFavorite, onNavig
         <span className="count-pill">{favorites.length}</span>
       </div>
       <p className="muted">
-        Tus favoritos se guardan en Supabase por trabajador para acceder rápidamente a sus bitácoras.
+        Usuarios guardados para acceso rápido.
       </p>
 
       {favorites.length === 0 ? (

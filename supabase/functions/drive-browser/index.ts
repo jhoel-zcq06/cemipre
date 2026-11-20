@@ -44,7 +44,7 @@ Deno.serve(async (req: Request) => {
     const userToken = await getUserDriveToken(adminClient, userId);
     if (!userToken) {
       return errorResponse(
-        'Conecta tu cuenta de Google Drive para explorar y seleccionar carpetas o bitácoras privadas.',
+        'Conecta tu cuenta de Google Drive para explorar carpetas y bitácoras.',
         401,
         { code: 'reconexion_requerida' },
       );

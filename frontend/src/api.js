@@ -299,7 +299,7 @@ function extractContextMessage(rawText, status) {
   return status ? `Error del servidor (HTTP ${status}).` : null;
 }
 
-export async function formatApiError(err, fallback = 'Ocurrió un error al comunicarse con Supabase.') {
+export async function formatApiError(err, fallback = 'Ocurrió un error al comunicarse con el servidor.') {
   if (!err) return fallback;
   if (err.context && typeof err.context.text === 'function') {
     try {

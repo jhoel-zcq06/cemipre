@@ -16,15 +16,15 @@ import {
 } from './components/WorkspaceViews.jsx';
 
 const BASE_TABS = [
-  { id: 'inicio', label: 'Inicio', symbol: '⌂', heading: 'Resumen operativo', subtitle: 'Estado general de usuarios, bitácoras y sincronización automática.' },
-  { id: 'usuarios', label: 'Usuarios', symbol: '▦', heading: 'Usuarios y bitácoras', subtitle: 'Gestiona fichas de usuarios, bitácoras privadas de Google Docs y notas internas.' },
-  { id: 'bitacoras', label: 'Bitácoras', symbol: '≡', heading: 'Directorio de bitácoras', subtitle: 'Busca, filtra y verifica el estado de los documentos vinculados.' },
-  { id: 'resumenes', label: 'Resúmenes IA', symbol: '✧', heading: 'Resúmenes asistidos por IA', subtitle: 'Síntesis desde el contenido real de Google Docs con referencias verificables.' },
-  { id: 'calendario', label: 'Calendario', symbol: '▤', heading: 'Calendario compartido', subtitle: 'Agenda interna del equipo CEMIPRE.' },
-  { id: 'actividad', label: 'Actividad', symbol: '◎', heading: 'Registro de actividad', subtitle: 'Auditoría de acciones realizadas por los trabajadores en la plataforma.' },
+  { id: 'inicio', label: 'Inicio', symbol: '⌂', heading: 'Inicio', subtitle: 'Resumen de usuarios, bitácoras y agenda.' },
+  { id: 'usuarios', label: 'Usuarios', symbol: '▦', heading: 'Usuarios y bitácoras', subtitle: 'Fichas de usuarios, bitácoras y notas internas.' },
+  { id: 'bitacoras', label: 'Bitácoras', symbol: '≡', heading: 'Bitácoras', subtitle: 'Busca y filtra los documentos registrados.' },
+  { id: 'resumenes', label: 'Resúmenes IA', symbol: '✧', heading: 'Resúmenes IA', subtitle: 'Genera un resumen de las bitácoras de un usuario.' },
+  { id: 'calendario', label: 'Calendario', symbol: '▤', heading: 'Calendario', subtitle: 'Agenda compartida del equipo CEMIPRE.' },
+  { id: 'actividad', label: 'Actividad', symbol: '◎', heading: 'Actividad', subtitle: 'Historial de cambios realizados por el equipo.' },
   { id: 'favoritos', label: 'Favoritos', symbol: '★', heading: 'Usuarios favoritos', subtitle: 'Accesos rápidos guardados en tu perfil.' },
-  { id: 'avisos', label: 'Avisos', symbol: '✉', heading: 'Avisos por correo', subtitle: 'Historial de notificaciones enviadas al detectarse ediciones en Google Docs.' },
-  { id: 'drive', label: 'Carpetas Drive', symbol: '☁', heading: 'Google Drive automático', subtitle: 'Sincronización automática en segundo plano, conexión Google privada y selección directa de carpetas.' },
+  { id: 'avisos', label: 'Avisos', symbol: '✉', heading: 'Avisos por correo', subtitle: 'Historial de correos enviados por cambios en bitácoras.' },
+  { id: 'drive', label: 'Carpetas Drive', symbol: '☁', heading: 'Carpetas Drive', subtitle: 'Conexión con Google Drive y carpetas vinculadas.' },
 ];
 
 export default function App() {
@@ -97,6 +97,8 @@ export default function App() {
   const lastSavedProviderTokenRef = useRef('');
   const lastAutoSyncAttemptRef = useRef(0);
   const pendingPostConnectSyncRef = useRef(false);
+  const activeSyncCountRef = useRef(0);
+  const syncRetryTimersRef = useRef(new Set());
 
   const isAdmin = perfil?.rol === 'admin';
   const isAuthorizedWorker = perfil?.rol === 'admin' || perfil?.rol === 'trabajador';
@@ -110,8 +112,8 @@ export default function App() {
               id: 'admin',
               label: 'Administración',
               symbol: '⚙',
-              heading: 'Administración de accesos',
-              subtitle: 'Aprueba cuentas de trabajadores y administra la lista blanca institucional.',
+              heading: 'Administración',
+              subtitle: 'Aprueba cuentas de trabajadores y administra correos autorizados.',
             },
           ]
         : BASE_TABS,
@@ -144,7 +146,7 @@ export default function App() {
 
     if (connected === '1') {
       setMessage(
-        `Google Drive conectado${driveEmail ? ` (${driveEmail})` : ''}. La sincronización automática ya está operativa.`,
+        `Google Drive conectado${driveEmail ? ` (${driveEmail})` : ''}.`,
       );
       pendingPostConnectSyncRef.current = true;
       setTab('drive');
@@ -201,7 +203,7 @@ export default function App() {
     };
   }, [loadAuthProfile]);
 
-  const runSilentAutoSync = useCallback(async ({ force = false, personaId } = {}) => {
+  const runSilentAutoSync = useCallback(async ({ force = false, personaId, retryCount = 0 } = {}) => {
     if (typeof api.syncDrive !== 'function') return;
     const now = Date.now();
     if (!force && typeof personaId !== 'number' && now - lastAutoSyncAttemptRef.current < 180_000) {
@@ -210,21 +212,45 @@ export default function App() {
     if (typeof personaId !== 'number') {
       lastAutoSyncAttemptRef.current = now;
     }
+    if (force) {
+      activeSyncCountRef.current += 1;
+      setSyncBusy(true);
+    }
     try {
       const res = await api.syncDrive({
         auto: true,
         ...(typeof personaId === 'number' ? { persona_id: personaId } : {}),
-        ...(force ? { cooldown_seconds: 0 } : {}),
+        ...(force ? { cooldown_seconds: 0, force: true } : {}),
       });
       if (res && !res.skipped) {
         setSyncResult(res);
-        if (res.hubo_cambios || typeof personaId === 'number') {
+        if (force || res.hubo_cambios || typeof personaId === 'number') {
           setReload((n) => n + 1);
         }
+      } else if (force && res?.skipped && res?.reason === 'en_curso' && retryCount < 1) {
+        const timerId = window.setTimeout(() => {
+          syncRetryTimersRef.current.delete(timerId);
+          runSilentAutoSync({ force: true, personaId, retryCount: retryCount + 1 });
+        }, 2500);
+        syncRetryTimersRef.current.add(timerId);
       }
     } catch {
-      // La sincronización silenciosa de fondo no debe interrumpir al trabajador con alertas intrusivas
+      // La sincronización en segundo plano no debe interrumpir al trabajador
+    } finally {
+      if (force) {
+        activeSyncCountRef.current = Math.max(0, activeSyncCountRef.current - 1);
+        if (activeSyncCountRef.current === 0) {
+          setSyncBusy(false);
+        }
+      }
     }
+  }, []);
+
+  useEffect(() => () => {
+    for (const timerId of syncRetryTimersRef.current) {
+      window.clearTimeout(timerId);
+    }
+    syncRetryTimersRef.current.clear();
   }, []);
 
   // Guardar automáticamente los tokens de Google Drive cuando el usuario inicia sesión con Google
@@ -323,6 +349,12 @@ export default function App() {
     };
     document.addEventListener('visibilitychange', onVisibility);
 
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && isDriveSyncStale(syncStateRef.current)) {
+        runSilentAutoSync({ force: false });
+      }
+    }, 60_000);
+
     const unsubscribe = typeof api.subscribeDriveSyncState === 'function'
       ? api.subscribeDriveSyncState((nextState) => {
           const prevTs = syncStateRef.current?.ultima_sincronizacion;
@@ -335,6 +367,7 @@ export default function App() {
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(intervalId);
       unsubscribe();
     };
   }, [isAuthorizedWorker, runSilentAutoSync]);
@@ -443,8 +476,10 @@ export default function App() {
   useEffect(() => {
     if (tab === 'avisos') {
       loadNotifications();
+    } else if (tab === 'drive' && isDriveSyncStale(syncStateRef.current)) {
+      runSilentAutoSync({ force: false });
     }
-  }, [tab, loadNotifications]);
+  }, [tab, loadNotifications, runSilentAutoSync]);
 
   // Cargar datos administrativos si es admin
   useEffect(() => {
@@ -530,7 +565,7 @@ export default function App() {
       if (created) {
         setSelectedId(created.id);
         setTab('usuarios');
-        if (created.drive_folder_id) {
+        if (created.drive_folder_id || syncStateRef.current?.root_folder_id) {
           runSilentAutoSync({ force: true, personaId: created.id });
         }
       }
@@ -574,11 +609,14 @@ export default function App() {
             docs: selectedDriveDocs,
           }, actor),
           selectedDriveDocs.length === 1
-            ? 'Bitácora vinculada directamente desde Google Drive.'
-            : `${selectedDriveDocs.length} bitácoras vinculadas directamente desde Google Drive.`,
+            ? 'Bitácora agregada desde Google Drive.'
+            : `${selectedDriveDocs.length} bitácoras agregadas desde Google Drive.`,
         );
-        if (res && res.inserted.length === 0 && res.skipped > 0) {
-          setMessage('Las bitácoras seleccionadas ya estaban vinculadas a este usuario.');
+        if (res) {
+          if (res.inserted.length === 0 && res.skipped > 0) {
+            setMessage('Las bitácoras seleccionadas ya estaban vinculadas a este usuario.');
+          }
+          runSilentAutoSync({ force: true, personaId: targetPersonaId });
         }
         return;
       }
@@ -592,13 +630,16 @@ export default function App() {
             persona_id: targetPersonaId,
             titulo: form.titulo || '',
           }),
-          'Carpeta y Google Doc creados en Drive y sincronizados con el usuario.',
+          'Bitácora creada en Google Drive.',
         );
-        if (res?.warning) {
-          setMessage(res.warning);
+        if (res) {
+          if (res.warning) {
+            setMessage(res.warning);
+          }
+          runSilentAutoSync({ force: true, personaId: targetPersonaId });
         }
       } else {
-        await runMutation(
+        const created = await runMutation(
           () => api.createLog({
             persona_id: targetPersonaId,
             titulo: form.titulo || '',
@@ -606,17 +647,27 @@ export default function App() {
           }, actor),
           'Bitácora agregada.',
         );
+        if (created) {
+          runSilentAutoSync({ force: true, personaId: targetPersonaId });
+        }
       }
     }
 
     if (modal === 'edit-log') {
-      await runMutation(
+      const updated = await runMutation(
         () => api.updateLog(form.id, {
           titulo: form.titulo || '',
           url_docs: form.url_docs || '',
         }, actor),
         'Datos de la bitácora actualizados.',
       );
+      if (updated) {
+        const targetPersonaId = updated.persona_id || form.persona_id || selectedId;
+        runSilentAutoSync({
+          force: true,
+          ...(typeof targetPersonaId === 'number' ? { personaId: targetPersonaId } : {}),
+        });
+      }
     }
 
     if (modal === 'delete-log') {
@@ -724,16 +775,20 @@ export default function App() {
   async function handleSyncDrive(payload = {}) {
     setError('');
     setMessage('');
+    activeSyncCountRef.current += 1;
     setSyncBusy(true);
     try {
       const res = await api.syncDrive(payload);
       setSyncResult(res);
-      setMessage('Comprobación con Google Drive completada.');
+      setMessage('Sincronización con Google Drive completada.');
       setReload((n) => n + 1);
     } catch (err) {
       setError(err.message);
     } finally {
-      setSyncBusy(false);
+      activeSyncCountRef.current = Math.max(0, activeSyncCountRef.current - 1);
+      if (activeSyncCountRef.current === 0) {
+        setSyncBusy(false);
+      }
     }
   }
 
@@ -772,7 +827,7 @@ export default function App() {
     setDriveAuthBusy(true);
     try {
       await api.setInstitutionalDriveConnection();
-      setMessage('Tu cuenta Google quedó activa para la sincronización automática del equipo.');
+      setMessage('Cuenta Google configurada para el equipo.');
       setReload((n) => n + 1);
       runSilentAutoSync({ force: true });
     } catch (err) {
@@ -807,7 +862,7 @@ export default function App() {
       await api.setDriveRootFolder({ root_folder_id, root_folder_name });
       setMessage(
         root_folder_id
-          ? `Carpeta raíz guardada${root_folder_name ? ` ("${root_folder_name}")` : ''}. Sincronizando automáticamente…`
+          ? `Carpeta raíz guardada${root_folder_name ? ` ("${root_folder_name}")` : ''}. Sincronizando…`
           : 'Carpeta raíz desvinculada.',
       );
       setReload((n) => n + 1);
@@ -901,13 +956,14 @@ export default function App() {
         if (res.inserted.length > 0) {
           setMessage(
             res.inserted.length === 1
-              ? `Se vinculó "${res.inserted[0].titulo}" desde Google Drive.`
-              : `Se vincularon ${res.inserted.length} bitácoras directamente desde Google Drive.`,
+              ? `Se agregó "${res.inserted[0].titulo}" desde Google Drive.`
+              : `Se agregaron ${res.inserted.length} bitácoras desde Google Drive.`,
           );
         } else {
           setMessage('Las bitácoras seleccionadas ya estaban vinculadas a este usuario.');
         }
         setReload((n) => n + 1);
+        runSilentAutoSync({ force: true, personaId: active.context.persona_id });
       } catch (err) {
         setError(err.message);
       }
@@ -929,7 +985,7 @@ export default function App() {
     setError('');
     try {
       await api.addWhitelistEmail(payload);
-      setMessage('Correo agregado a lista blanca.');
+      setMessage('Correo autorizado agregado.');
       setReload((n) => n + 1);
       return true;
     } catch (err) {
@@ -942,7 +998,7 @@ export default function App() {
     setError('');
     try {
       await api.removeWhitelistEmail(email);
-      setMessage('Correo retirado de la lista blanca.');
+      setMessage('Correo autorizado eliminado.');
       setReload((n) => n + 1);
     } catch (err) {
       setError(err.message);
@@ -988,7 +1044,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Navegación principal">
-        <BrandHeader subtitle="Plataforma de bitácoras" />
+        <BrandHeader subtitle="Gestión de bitácoras" />
 
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
         <nav className="navigation" aria-label="Secciones">
@@ -1005,14 +1061,6 @@ export default function App() {
             </button>
           ))}
         </nav>
-
-        <div className="sidebar-bottom">
-          <span className="status-indicator status-live" aria-hidden="true" />
-          <div>
-            <strong>Supabase + RLS activo</strong>
-            <span>Sesión protegida ({perfil.rol})</span>
-          </div>
-        </div>
       </aside>
 
       <main id="contenido" className="main-content">
@@ -1202,7 +1250,7 @@ export default function App() {
           )}
 
           <footer className="footer">
-            CEMIPRE · Plataforma colaborativa de bitácoras (React + Supabase + Google Docs)
+            Fundación CEMIPRE · Viña del Mar
           </footer>
         </div>
       </main>

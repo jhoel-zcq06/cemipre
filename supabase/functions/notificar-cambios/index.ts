@@ -175,7 +175,7 @@ Deno.serve(async (req: Request) => {
         id: 'global',
         start_page_token: initialToken,
         ultima_sincronizacion: new Date().toISOString(),
-        ultimo_estado: 'Token inicial de Google Drive Changes API registrado.',
+        ultimo_estado: 'Sincronización de avisos inicializada.',
         actualizado: new Date().toISOString(),
       });
       return jsonResponse({ ok: true, initialized: true, start_page_token: initialToken });
@@ -191,7 +191,7 @@ Deno.serve(async (req: Request) => {
           id: 'global',
           start_page_token: refreshedToken,
           ultima_sincronizacion: new Date().toISOString(),
-          ultimo_estado: 'Cursor de cambios renovado tras expiración en Google Drive.',
+          ultimo_estado: 'Sincronización de avisos actualizada.',
           actualizado: new Date().toISOString(),
         });
         return jsonResponse({ ok: true, token_refreshed: true });
@@ -391,7 +391,7 @@ Deno.serve(async (req: Request) => {
       id: 'global',
       start_page_token: changesResult.newStartPageToken,
       ultima_sincronizacion: new Date().toISOString(),
-      ultimo_estado: `Sincronización automática y avisos: ${changedIds.length} cambios en Drive, ${notificacionesEnviadas} correos enviados, ${notificacionesOmitidas} agrupados.`,
+      ultimo_estado: `Avisos revisados: ${changedIds.length} cambios, ${notificacionesEnviadas} enviados, ${notificacionesOmitidas} agrupados.`,
       actualizado: new Date().toISOString(),
     });
 
