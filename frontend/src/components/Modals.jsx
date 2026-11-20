@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { extractGoogleFolderId } from '../api.js';
+import { EVENT_COLOR_SWATCHES, EVENT_LABEL_PRESETS } from '../calendarUtils.js';
 import { Notice } from './SharedUI.jsx';
 
 const FOCUSABLE_SELECTOR = [
@@ -410,6 +411,67 @@ export function AppModal({
                 onChange={(e) => onUpdateField('responsable', e.target.value)}
               />
             </label>
+            <div className="event-label-field">
+              <label>
+                Etiqueta
+                <input
+                  maxLength={60}
+                  value={form.etiqueta ?? ''}
+                  placeholder="General, Reunión clínica, Taller…"
+                  onChange={(e) => onUpdateField('etiqueta', e.target.value)}
+                />
+              </label>
+              <div className="event-label-presets" role="group" aria-label="Etiquetas sugeridas">
+                {EVENT_LABEL_PRESETS.map((preset) => {
+                  const active = (form.etiqueta || 'General').trim().toLowerCase() === preset.label.toLowerCase();
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className={`event-preset-pill ${active ? 'active' : ''}`}
+                      aria-pressed={active}
+                      onClick={() => {
+                        onUpdateField('etiqueta', preset.label);
+                        onUpdateField('color', preset.color);
+                      }}
+                    >
+                      <span
+                        className="event-preset-dot"
+                        style={{ backgroundColor: preset.color }}
+                        aria-hidden="true"
+                      />
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="event-color-row" role="group" aria-label="Color de etiqueta">
+                <span className="event-color-label">Color:</span>
+                {EVENT_COLOR_SWATCHES.map((swatch) => {
+                  const selected = (form.color || '').toLowerCase() === swatch.color.toLowerCase();
+                  return (
+                    <button
+                      key={swatch.color}
+                      type="button"
+                      className={`event-color-swatch ${selected ? 'active' : ''}`}
+                      style={{ backgroundColor: swatch.color }}
+                      aria-label={`Color ${swatch.label}`}
+                      aria-pressed={selected}
+                      onClick={() => onUpdateField('color', swatch.color)}
+                    />
+                  );
+                })}
+                {form.color && (
+                  <button
+                    type="button"
+                    className="inline-button muted"
+                    onClick={() => onUpdateField('color', '')}
+                  >
+                    Automático
+                  </button>
+                )}
+              </div>
+            </div>
             <label>
               Descripción (opcional)
               <textarea

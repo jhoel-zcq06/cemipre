@@ -1,21 +1,26 @@
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { cleanup, render, screen, fireEvent, within } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import {
   addDays,
   addMonths,
   buildDefaultSlotRange,
+  collectCalendarLabels,
+  filterEventsByVisibleLabels,
   formatDayTitle,
   formatWeekRangeTitle,
   getMonthGridDays,
   getWeekDays,
+  hexToToneStyle,
   layoutTimedEventsForDay,
   normalizeEvent,
+  normalizeEvents,
 } from './calendarUtils.js';
 import { CalendarioView } from './components/CalendarView.jsx';
 
 afterEach(() => {
   cleanup();
+  window.localStorage?.clear();
 });
 
 const SAMPLE_EVENTS = [
@@ -24,6 +29,9 @@ const SAMPLE_EVENTS = [
     titulo: 'Reunión clínica',
     descripcion: 'Revisión de casos semanales.',
     responsable: 'Equipo CEMIPRE',
+    etiqueta: 'Reunión clínica',
+    color: '#36c993',
+    origen: 'cemipre',
     inicio: '2026-11-19T12:00:00Z', // 09:00 America/Santiago (UTC-3 en noviembre)
     fin: '2026-11-19T13:30:00Z', // 10:30 America/Santiago
   },
@@ -32,6 +40,9 @@ const SAMPLE_EVENTS = [
     titulo: 'Taller de familia',
     descripcion: 'Sesión con apoderados.',
     responsable: 'Psicología',
+    etiqueta: 'Taller',
+    color: '#a285ff',
+    origen: 'cemipre',
     inicio: '2026-11-19T13:00:00Z', // 10:00 America/Santiago (solapa con Reunión clínica)
     fin: '2026-11-19T14:30:00Z', // 11:30 America/Santiago
   },
@@ -40,6 +51,13 @@ const SAMPLE_EVENTS = [
     titulo: 'Jornada anual',
     descripcion: 'Actividad institucional de 2 días.',
     responsable: 'Dirección',
+    etiqueta: 'Google Dirección',
+    color: '#0b8043',
+    origen: 'google',
+    google_event_id: 'g-ev-3',
+    google_calendar_id: 'cal-dir@group.calendar.google.com',
+    google_calendar_name: 'Google Dirección',
+    google_html_link: 'https://calendar.google.com/event?eid=abc',
     inicio: '2026-11-20T12:00:00Z', // 20 nov 09:00 CL
     fin: '2026-11-21T20:00:00Z', // 21 nov 17:00 CL
   },
@@ -79,14 +97,25 @@ describe('calendarUtils', () => {
     });
   });
 
-  it('normaliza eventos simples, hasta medianoche y de varios días en América/Santiago', () => {
+  it('normaliza eventos simples, todo el día, hasta medianoche y de varios días en América/Santiago', () => {
     const single = normalizeEvent(SAMPLE_EVENTS[0]);
     expect(single.startKey).toBe('2026-11-19');
     expect(single.effectiveEndKey).toBe('2026-11-19');
     expect(single.isMultiDay).toBe(false);
     expect(single.isFullDayBanner).toBe(false);
+    expect(single.etiqueta).toBe('Reunión clínica');
     expect(single.startMinutes).toBe(9 * 60);
     expect(single.endMinutes).toBe(10 * 60 + 30);
+
+    const allDay = normalizeEvent({
+      id: 8,
+      titulo: 'Feriado legal',
+      todo_el_dia: true,
+      inicio: '2026-11-20T03:00:00Z',
+      fin: '2026-11-21T03:00:00Z',
+    });
+    expect(allDay.isFullDayBanner).toBe(true);
+    expect(allDay.timeRangeLabel).toBe('Todo el día');
 
     const untilMidnight = normalizeEvent({
       id: 9,
@@ -104,6 +133,20 @@ describe('calendarUtils', () => {
     expect(multi.effectiveEndKey).toBe('2026-11-21');
     expect(multi.isMultiDay).toBe(true);
     expect(multi.isFullDayBanner).toBe(true);
+    expect(multi.isGoogleSynced).toBe(true);
+  });
+
+  it('agrupa etiquetas, filtra etiquetas ocultas y convierte colores hex', () => {
+    const normalized = normalizeEvents(SAMPLE_EVENTS);
+    const labels = collectCalendarLabels(normalized);
+    expect(labels.map((l) => l.label)).toEqual(['Reunión clínica', 'Taller', 'Google Dirección']);
+
+    const filtered = filterEventsByVisibleLabels(normalized, new Set(['taller']));
+    expect(filtered.map((e) => e.id)).toEqual([1, 3]);
+
+    const style = hexToToneStyle('#0b8043');
+    expect(style['--tone-accent']).toBe('#0b8043');
+    expect(hexToToneStyle('no-hex')).toBeUndefined();
   });
 
   it('distribuye en columnas paralelas los eventos superpuestos del mismo día', () => {
@@ -119,7 +162,7 @@ describe('calendarUtils', () => {
   });
 });
 
-describe('CalendarioView (vistas Mensual, Semanal y Día)', () => {
+describe('CalendarioView (vistas Mensual, Semanal, Día, etiquetas y Google Calendar)', () => {
   it('muestra la cuadrícula mensual por defecto incluso sin eventos y permite cambiar de mes', () => {
     const onOpenModal = vi.fn();
     render(<CalendarioView events={[]} onOpenModal={onOpenModal} initialDate="2026-11-19" />);
@@ -141,48 +184,136 @@ describe('CalendarioView (vistas Mensual, Semanal y Día)', () => {
     const onOpenModal = vi.fn();
     render(<CalendarioView events={SAMPLE_EVENTS} onOpenModal={onOpenModal} initialDate="2026-11-19" />);
 
-    // Vista Mensual muestra los eventos en el calendario
     const monthGrid = screen.getByRole('grid', { name: /Calendario mensual/i });
     expect(within(monthGrid).getByText('Reunión clínica')).toBeInTheDocument();
     expect(within(monthGrid).getByText('Taller de familia')).toBeInTheDocument();
-    expect(within(monthGrid).getAllByText('Jornada anual')).toHaveLength(2); // 20 y 21 nov
+    expect(within(monthGrid).getAllByText('Jornada anual')).toHaveLength(2);
 
-    // Cambiar a Vista Semanal
     fireEvent.click(screen.getByRole('tab', { name: 'Semanal' }));
     expect(screen.getByRole('tab', { name: 'Semanal' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { name: '16 – 22 nov 2026' })).toBeInTheDocument();
     expect(screen.getByLabelText(/Eventos de todo el día o varios días/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Mini calendario mensual/i)).toBeInTheDocument();
 
-    // Navegar a la semana siguiente y volver
     fireEvent.click(screen.getByRole('button', { name: 'Semana siguiente' }));
     expect(screen.getByRole('heading', { name: '23 – 29 nov 2026' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Semana anterior' }));
     expect(screen.getByRole('heading', { name: '16 – 22 nov 2026' })).toBeInTheDocument();
 
-    // Cambiar a Vista Día
     fireEvent.click(screen.getByRole('tab', { name: 'Día' }));
     expect(screen.getByRole('tab', { name: 'Día' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { level: 2, name: 'Jueves, 19 de noviembre de 2026' })).toBeInTheDocument();
 
-    // Navegar al día siguiente (20 nov) donde aparece el evento de varios días
     fireEvent.click(screen.getByRole('button', { name: 'Día siguiente' }));
     expect(screen.getByRole('heading', { level: 2, name: 'Viernes, 20 de noviembre de 2026' })).toBeInTheDocument();
     expect(screen.getByLabelText(/Eventos de todo el día o varios días/i)).toHaveTextContent('Jornada anual');
+  });
+
+  it('permite ocultar y volver a mostrar etiquetas de eventos igual que Google Calendar en todas las vistas', () => {
+    const onOpenModal = vi.fn();
+    render(<CalendarioView events={SAMPLE_EVENTS} onOpenModal={onOpenModal} initialDate="2026-11-19" />);
+
+    const monthGrid = screen.getByRole('grid', { name: /Calendario mensual/i });
+    expect(within(monthGrid).getByText('Taller de familia')).toBeInTheDocument();
+    expect(within(monthGrid).getByText('Reunión clínica')).toBeInTheDocument();
+
+    // Desmarcar etiqueta "Taller"
+    const tallerCheckbox = screen.getByRole('checkbox', { name: 'Mostrar etiqueta Taller' });
+    expect(tallerCheckbox).toBeChecked();
+    fireEvent.click(tallerCheckbox);
+    expect(tallerCheckbox).not.toBeChecked();
+
+    expect(within(monthGrid).queryByText('Taller de familia')).not.toBeInTheDocument();
+    expect(within(monthGrid).getByText('Reunión clínica')).toBeInTheDocument();
+    expect(screen.getByText(/1 etiqueta oculta/i)).toBeInTheDocument();
+
+    // El filtro se mantiene al cambiar a Vista Día
+    fireEvent.click(screen.getByRole('tab', { name: 'Día' }));
+    const dayView = screen.getByLabelText(/Calendario diario/i);
+    expect(within(dayView).queryByText('Taller de familia')).not.toBeInTheDocument();
+    expect(within(dayView).getByText('Reunión clínica')).toBeInTheDocument();
+
+    // Restaurar todas las etiquetas
+    fireEvent.click(screen.getAllByRole('button', { name: 'Mostrar todas' })[0]);
+    expect(within(dayView).getByText('Taller de familia')).toBeInTheDocument();
+  });
+
+  it('expone controles de conexión, configuración y sincronización con Google Calendar', async () => {
+    const onConnectGoogleCalendar = vi.fn();
+    const onSyncGoogleCalendar = vi.fn();
+    const onListGoogleCalendars = vi.fn(async () => ({
+      calendars: [
+        { id: 'primary', summary: 'Agenda CEMIPRE', primary: true, backgroundColor: '#4285f4', accessRole: 'owner', writable: true },
+        { id: 'holidays@group.v.calendar.google.com', summary: 'Feriados Chile', primary: false, backgroundColor: '#0b8043', accessRole: 'reader', writable: false },
+      ],
+      sync_state: { calendars: [{ id: 'primary', summary: 'Agenda CEMIPRE' }], sync_direction: 'bidirectional', target_calendar_id: 'primary' },
+    }));
+    const onSaveGoogleCalendarConfig = vi.fn(async () => true);
+
+    const { rerender } = render(
+      <CalendarioView
+        events={SAMPLE_EVENTS}
+        onOpenModal={vi.fn()}
+        initialDate="2026-11-19"
+        driveStatus={{ conectado: true, scopes: 'https://www.googleapis.com/auth/drive', tiene_calendar_scope: false }}
+        onConnectGoogleCalendar={onConnectGoogleCalendar}
+        onSyncGoogleCalendar={onSyncGoogleCalendar}
+        onListGoogleCalendars={onListGoogleCalendars}
+        onSaveGoogleCalendarConfig={onSaveGoogleCalendarConfig}
+      />,
+    );
+
+    const connectBtn = screen.getByRole('button', { name: /Conectar Google Calendar/i });
+    fireEvent.click(connectBtn);
+    expect(onConnectGoogleCalendar).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <CalendarioView
+        events={SAMPLE_EVENTS}
+        onOpenModal={vi.fn()}
+        initialDate="2026-11-19"
+        driveStatus={{ conectado: true, scopes: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/calendar', tiene_calendar_scope: true }}
+        onConnectGoogleCalendar={onConnectGoogleCalendar}
+        onSyncGoogleCalendar={onSyncGoogleCalendar}
+        onListGoogleCalendars={onListGoogleCalendars}
+        onSaveGoogleCalendarConfig={onSaveGoogleCalendarConfig}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Sincronizar/i }));
+    expect(onSyncGoogleCalendar).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /Calendarios/i }));
+    expect(await screen.findByText('Feriados Chile')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText(/Feriados Chile/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar y sincronizar' }));
+
+    await waitFor(() => {
+      expect(onSaveGoogleCalendarConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sync_direction: 'bidirectional',
+          target_calendar_id: 'primary',
+          calendars: expect.arrayContaining([
+            expect.objectContaining({ id: 'primary' }),
+            expect.objectContaining({ id: 'holidays@group.v.calendar.google.com' }),
+          ]),
+        }),
+      );
+    });
   });
 
   it('permite crear eventos al pulsar un día o una franja horaria, y editar o eliminar eventos seleccionados', () => {
     const onOpenModal = vi.fn();
     render(<CalendarioView events={SAMPLE_EVENTS} onOpenModal={onOpenModal} initialDate="2026-11-19" />);
 
-    // Crear evento desde el botón + de una celda mensual
     fireEvent.click(screen.getByRole('button', { name: /Crear evento el Viernes, 20 de noviembre de 2026/i }));
     expect(onOpenModal).toHaveBeenCalledWith('new-event', {
       inicio: '2026-11-20T09:00',
       fin: '2026-11-20T10:00',
+      etiqueta: 'General',
     });
 
-    // Seleccionar evento y abrir modal de edición y eliminación
     const monthGrid = screen.getByRole('grid', { name: /Calendario mensual/i });
     fireEvent.click(within(monthGrid).getByText('Reunión clínica'));
     expect(screen.getByText('EVENTO SELECCIONADO')).toBeInTheDocument();
@@ -195,6 +326,7 @@ describe('CalendarioView (vistas Mensual, Semanal y Día)', () => {
       expect.objectContaining({
         id: 1,
         titulo: 'Reunión clínica',
+        etiqueta: 'Reunión clínica',
         inicio: '2026-11-19T09:00',
         fin: '2026-11-19T10:30',
       }),
@@ -203,7 +335,6 @@ describe('CalendarioView (vistas Mensual, Semanal y Día)', () => {
     fireEvent.click(within(detailCard).getByRole('button', { name: 'Eliminar' }));
     expect(onOpenModal).toHaveBeenCalledWith('delete-event', SAMPLE_EVENTS[0]);
 
-    // Crear evento desde una franja horaria en Vista Día
     fireEvent.click(screen.getByRole('tab', { name: 'Día' }));
     fireEvent.click(
       screen.getByRole('button', { name: /Crear evento el Jueves, 19 de noviembre de 2026 a las 14:00/i }),
@@ -211,9 +342,9 @@ describe('CalendarioView (vistas Mensual, Semanal y Día)', () => {
     expect(onOpenModal).toHaveBeenCalledWith('new-event', {
       inicio: '2026-11-19T14:00',
       fin: '2026-11-19T15:00',
+      etiqueta: 'General',
     });
 
-    // Saltar a otra fecha mediante el mini calendario
     fireEvent.click(screen.getByRole('button', { name: /Ir al Sábado, 21 de noviembre de 2026/i }));
     expect(screen.getByRole('heading', { level: 2, name: 'Sábado, 21 de noviembre de 2026' })).toBeInTheDocument();
   });

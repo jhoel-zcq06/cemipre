@@ -4,8 +4,10 @@ import {
   buildGoogleOAuthAuthorizeUrl,
   exchangeGoogleAuthCode,
   fetchGoogleUserInfo,
+  GOOGLE_CALENDAR_SCOPE,
   GOOGLE_OAUTH_DRIVE_SCOPES,
   GoogleApiError,
+  hasCalendarScope,
   hasGoogleOAuthConfigured,
   hasServiceAccountConfigured,
   normalizeFolderId,
@@ -18,6 +20,7 @@ interface OAuthStatePayload extends Record<string, unknown> {
   userId: string;
   setInstitutional: boolean;
   returnTo: string;
+  purpose?: 'drive' | 'calendar';
 }
 
 function getDefaultAppBaseUrl(): string {
@@ -95,6 +98,18 @@ async function verifyDriveTokenAndEmail(accessToken: string): Promise<{ email: s
   return { email: '', sub: '', hasDriveAccess: false };
 }
 
+async function verifyCalendarAccess(accessToken: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1&fields=items(id)',
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function handleOAuthCallbackGet(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const code = (url.searchParams.get('code') || '').trim();
@@ -115,10 +130,12 @@ async function handleOAuthCallbackGet(req: Request): Promise<Response> {
   }
 
   if (googleError) {
+    const isCal = state?.purpose === 'calendar';
+    const serviceLabel = isCal ? 'Google Calendar' : 'Google Drive';
     const msg = googleError === 'access_denied'
-      ? 'Cancelaste la autorización de Google Drive.'
+      ? `Cancelaste la autorización de ${serviceLabel}.`
       : `Google rechazó la autorización (${googleError}).`;
-    return redirectToApp(returnTo, { drive_oauth_error: msg });
+    return redirectToApp(returnTo, isCal ? { calendar_oauth_error: msg } : { drive_oauth_error: msg });
   }
 
   if (!code || !state?.userId) {
@@ -126,6 +143,9 @@ async function handleOAuthCallbackGet(req: Request): Promise<Response> {
       drive_oauth_error: 'Respuesta OAuth de Google incompleta (falta código o estado).',
     });
   }
+
+  const isCalendarFlow = state.purpose === 'calendar';
+  const errParamKey = isCalendarFlow ? 'calendar_oauth_error' : 'drive_oauth_error';
 
   try {
     const adminClient = getSupabaseAdmin();
@@ -137,13 +157,15 @@ async function handleOAuthCallbackGet(req: Request): Promise<Response> {
 
     if (perfilErr || !perfil || (perfil.rol !== 'admin' && perfil.rol !== 'trabajador')) {
       return redirectToApp(returnTo, {
-        drive_oauth_error: 'Tu cuenta no está autorizada para conectar Google Drive.',
+        [errParamKey]: 'Tu cuenta no está autorizada para conectar Google.',
       });
     }
 
     const tokens = await exchangeGoogleAuthCode(code);
     const verified = await verifyDriveTokenAndEmail(tokens.access_token);
     const userInfo = verified.email ? verified : await fetchGoogleUserInfo(tokens.access_token);
+    const grantedScopes = tokens.scope || GOOGLE_OAUTH_DRIVE_SCOPES;
+    const calGranted = hasCalendarScope(grantedScopes) || await verifyCalendarAccess(tokens.access_token);
 
     // Determinar si debe quedar como cuenta institucional de sincronización automática
     let shouldSetInstitutional = Boolean(state.setInstitutional && perfil.rol === 'admin');
@@ -162,7 +184,9 @@ async function handleOAuthCallbackGet(req: Request): Promise<Response> {
       p_user_id: state.userId,
       p_google_email: userInfo.email,
       p_google_sub: userInfo.sub,
-      p_scopes: tokens.scope || GOOGLE_OAUTH_DRIVE_SCOPES,
+      p_scopes: calGranted && !hasCalendarScope(grantedScopes)
+        ? `${grantedScopes} ${GOOGLE_CALENDAR_SCOPE}`.trim()
+        : grantedScopes,
       p_access_token_enc: accessEnc,
       p_refresh_token_enc: refreshEnc,
       p_expires_at: expiresAt,
@@ -171,18 +195,28 @@ async function handleOAuthCallbackGet(req: Request): Promise<Response> {
 
     if (upsertErr) {
       return redirectToApp(returnTo, {
-        drive_oauth_error: `Error guardando conexión de Google Drive: ${upsertErr.message}`,
+        [errParamKey]: `Error guardando conexión de Google: ${upsertErr.message}`,
       });
     }
 
     const isInst = Boolean((upsertRes as { is_institutional?: boolean } | null)?.is_institutional);
     await adminClient.from('actividad').insert({
-      descripcion: isInst
-        ? `Conectó Google Drive institucional (${userInfo.email || perfil.email}) para sincronización automática.`
-        : `Conectó su cuenta Google Drive (${userInfo.email || perfil.email}).`,
+      descripcion: isCalendarFlow
+        ? `Conectó Google Calendar (${userInfo.email || perfil.email}).`
+        : isInst
+          ? `Conectó Google Drive institucional (${userInfo.email || perfil.email}) para sincronización automática.`
+          : `Conectó su cuenta Google Drive (${userInfo.email || perfil.email}).`,
       actor_id: state.userId,
       actor_nombre: perfil.nombre || perfil.email,
     });
+
+    if (isCalendarFlow) {
+      return redirectToApp(returnTo, {
+        calendar_connected: '1',
+        calendar_email: userInfo.email || '',
+        calendar_scope: calGranted ? '1' : '0',
+      });
+    }
 
     return redirectToApp(returnTo, {
       drive_connected: '1',
@@ -191,7 +225,7 @@ async function handleOAuthCallbackGet(req: Request): Promise<Response> {
     });
   } catch (err) {
     return redirectToApp(returnTo, {
-      drive_oauth_error: (err as Error).message || 'No se pudo completar la conexión con Google Drive.',
+      [errParamKey]: (err as Error).message || 'No se pudo completar la conexión con Google.',
     });
   }
 }
@@ -235,8 +269,10 @@ Deno.serve(async (req: Request) => {
         conectado: own?.status === 'conectado',
         google_email: own?.google_email || '',
         status: own?.status || 'desconectado',
+        scopes: own?.scopes || '',
         es_institucional: Boolean(own?.is_institutional),
         tiene_refresh_token: Boolean(own?.refresh_token_enc),
+        tiene_calendar_scope: Boolean(own?.status === 'conectado' && hasCalendarScope(own?.scopes)),
         last_error: own?.last_error || '',
         updated_at: own?.updated_at || null,
         institucional: {
@@ -244,6 +280,7 @@ Deno.serve(async (req: Request) => {
           google_email: inst?.google_email || '',
           status: inst?.status || 'sin_configurar',
           es_propia: Boolean(inst && inst.user_id === userId),
+          tiene_calendar_scope: Boolean(inst?.status === 'conectado' && hasCalendarScope(inst?.scopes)),
           last_error: inst?.last_error || '',
           updated_at: inst?.updated_at || null,
         },
@@ -260,14 +297,26 @@ Deno.serve(async (req: Request) => {
         return errorResponse('Falta provider_token de la sesión de Google.', 400);
       }
 
-      const verified = await verifyDriveTokenAndEmail(providerToken);
-      if (!verified.hasDriveAccess) {
+      const [verified, hasCalAccess] = await Promise.all([
+        verifyDriveTokenAndEmail(providerToken),
+        verifyCalendarAccess(providerToken),
+      ]);
+      if (!verified.hasDriveAccess && !hasCalAccess) {
         return jsonResponse({
           ok: false,
           has_drive_scope: false,
-          message: 'La sesión Google actual no incluye permisos de Google Drive.',
+          has_calendar_scope: false,
+          message: 'La sesión Google actual no incluye permisos de Google Drive ni Google Calendar.',
         });
       }
+
+      const detectedScopes = [
+        'openid',
+        'email',
+        'profile',
+        ...(verified.hasDriveAccess ? ['https://www.googleapis.com/auth/drive'] : []),
+        ...(hasCalAccess ? [GOOGLE_CALENDAR_SCOPE] : []),
+      ].join(' ');
 
       let shouldSetInstitutional = false;
       if (perfil.rol === 'admin' && providerRefresh) {
@@ -286,7 +335,7 @@ Deno.serve(async (req: Request) => {
         p_user_id: userId,
         p_google_email: verified.email || perfil.email,
         p_google_sub: verified.sub,
-        p_scopes: GOOGLE_OAUTH_DRIVE_SCOPES,
+        p_scopes: detectedScopes,
         p_access_token_enc: accessEnc,
         p_refresh_token_enc: refreshEnc,
         p_expires_at: expiresAt,
@@ -294,13 +343,14 @@ Deno.serve(async (req: Request) => {
       });
 
       if (upsertErr) {
-        return errorResponse(`No se pudo guardar la conexión Google Drive: ${upsertErr.message}`, 500);
+        return errorResponse(`No se pudo guardar la conexión Google: ${upsertErr.message}`, 500);
       }
 
       const resObj = (upsertRes ?? {}) as { is_institutional?: boolean; tiene_refresh_token?: boolean };
       return jsonResponse({
         ok: true,
-        has_drive_scope: true,
+        has_drive_scope: verified.hasDriveAccess,
+        has_calendar_scope: hasCalAccess,
         google_email: verified.email || perfil.email,
         es_institucional: Boolean(resObj.is_institutional),
         tiene_refresh_token: Boolean(resObj.tiene_refresh_token),
@@ -309,8 +359,9 @@ Deno.serve(async (req: Request) => {
 
     if (action === 'start-oauth') {
       const setInstitutional = Boolean(body.set_institutional);
+      const purpose = body.purpose === 'calendar' ? 'calendar' : 'drive';
       if (setInstitutional && perfil.rol !== 'admin') {
-        return errorResponse('Solo un administrador puede configurar la conexión institucional de Drive.', 403);
+        return errorResponse('Solo un administrador puede configurar la conexión institucional de Google.', 403);
       }
 
       const returnTo = sanitizeReturnTo(typeof body.return_to === 'string' ? body.return_to : undefined);
@@ -318,6 +369,7 @@ Deno.serve(async (req: Request) => {
         userId,
         setInstitutional,
         returnTo,
+        purpose,
       });
 
       const authUrl = buildGoogleOAuthAuthorizeUrl({

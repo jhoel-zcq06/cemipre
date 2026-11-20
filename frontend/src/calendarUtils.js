@@ -223,13 +223,66 @@ export function buildDefaultSlotRange(dateKey, startHour = 9, durationMinutes = 
   };
 }
 
+export const EVENT_LABEL_PRESETS = [
+  { id: 'General', label: 'General', tone: 0, color: '#6c87ff' },
+  { id: 'Reunión clínica', label: 'Reunión clínica', tone: 1, color: '#36c993' },
+  { id: 'Taller', label: 'Taller', tone: 2, color: '#a285ff' },
+  { id: 'Evaluación', label: 'Evaluación', tone: 3, color: '#e5a944' },
+  { id: 'Administrativo', label: 'Administrativo', tone: 4, color: '#3cb5dc' },
+  { id: 'Urgente', label: 'Urgente', tone: 5, color: '#f06584' },
+];
+
+export const EVENT_COLOR_SWATCHES = EVENT_LABEL_PRESETS.map((p) => ({
+  color: p.color,
+  label: p.label,
+  tone: p.tone,
+}));
+
+export function normalizeLabelName(value, fallback = 'General') {
+  const cleaned = String(value || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return cleaned || fallback;
+}
+
+export function toLabelKey(label) {
+  return normalizeLabelName(label).toLowerCase();
+}
+
+export function sanitizeHexColor(value) {
+  const trimmed = String(value || '').trim();
+  return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed.toLowerCase() : '';
+}
+
+export function getPresetForLabel(label) {
+  const key = toLabelKey(label);
+  return EVENT_LABEL_PRESETS.find((p) => p.label.toLowerCase() === key) || null;
+}
+
+export function hexToToneStyle(hex) {
+  const clean = sanitizeHexColor(hex);
+  if (!clean) return undefined;
+  const r = Number.parseInt(clean.slice(1, 3), 16);
+  const g = Number.parseInt(clean.slice(3, 5), 16);
+  const b = Number.parseInt(clean.slice(5, 7), 16);
+  return {
+    '--tone-accent': clean,
+    '--tone-bg': `rgba(${r}, ${g}, ${b}, 0.22)`,
+    '--tone-border': `rgba(${r}, ${g}, ${b}, 0.56)`,
+    '--tone-text': '#f0f5ff',
+  };
+}
+
 export function getEventTone(event) {
-  const seed = String(event?.responsable || event?.titulo || event?.id || '0').trim().toLowerCase();
+  const label = event?.etiqueta || event?.google_calendar_name || '';
+  if (label) {
+    const preset = getPresetForLabel(label);
+    if (preset) return preset.tone;
+  }
+  const seed = String(label || event?.responsable || event?.titulo || event?.id || '0').trim().toLowerCase();
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) {
     hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
   }
-  return hash % 5;
+  return hash % EVENT_LABEL_PRESETS.length;
 }
 
 export function normalizeEvent(event) {
@@ -246,16 +299,36 @@ export function normalizeEvent(event) {
   const effectiveEndKey = endsAtMidnightAfterStart ? addDays(end.dateKey, -1) : end.dateKey;
   const isMultiDay = effectiveEndKey > start.dateKey;
   const endMinutesOnSingleDay = endsAtMidnightAfterStart ? 1440 : end.minutesOfDay;
-  const isFullDayBanner = isMultiDay || (start.minutesOfDay === 0 && endMinutesOnSingleDay >= 1439);
+  const todoElDia = Boolean(event.todo_el_dia);
+  const isFullDayBanner = todoElDia || isMultiDay || (start.minutesOfDay === 0 && endMinutesOnSingleDay >= 1439);
 
   const startTimeLabel = formatTimeHM(start.hour, start.minute);
   const endTimeLabel = endsAtMidnightAfterStart && !isMultiDay
     ? '24:00'
     : formatTimeHM(end.hour, end.minute);
 
-  const timeRangeLabel = isMultiDay
-    ? `${formatShortDayLabel(start.dateKey)} ${startTimeLabel} – ${formatShortDayLabel(end.dateKey)} ${formatTimeHM(end.hour, end.minute)}`
-    : `${startTimeLabel} – ${endTimeLabel}`;
+  let timeRangeLabel;
+  if (todoElDia && !isMultiDay) {
+    timeRangeLabel = 'Todo el día';
+  } else if (todoElDia && isMultiDay) {
+    timeRangeLabel = `${formatShortDayLabel(start.dateKey)} – ${formatShortDayLabel(effectiveEndKey)} · Todo el día`;
+  } else if (isMultiDay) {
+    timeRangeLabel = `${formatShortDayLabel(start.dateKey)} ${startTimeLabel} – ${formatShortDayLabel(end.dateKey)} ${formatTimeHM(end.hour, end.minute)}`;
+  } else {
+    timeRangeLabel = `${startTimeLabel} – ${endTimeLabel}`;
+  }
+
+  const googleCalendarId = String(event.google_calendar_id || '').trim();
+  const googleCalendarName = String(event.google_calendar_name || '').trim();
+  const googleEventId = String(event.google_event_id || '').trim();
+  const googleHtmlLink = String(event.google_html_link || '').trim();
+  const origen = event.origen === 'google' ? 'google' : 'cemipre';
+  const etiqueta = normalizeLabelName(event.etiqueta || googleCalendarName || 'General');
+  const labelKey = toLabelKey(etiqueta);
+  const preset = getPresetForLabel(etiqueta);
+  const tone = preset ? preset.tone : getEventTone({ etiqueta });
+  const explicitColor = sanitizeHexColor(event.color);
+  const color = explicitColor || preset?.color || EVENT_LABEL_PRESETS[tone]?.color || '#6c87ff';
 
   return {
     raw: event,
@@ -263,6 +336,17 @@ export function normalizeEvent(event) {
     titulo: event.titulo || 'Evento sin título',
     descripcion: event.descripcion || '',
     responsable: event.responsable || 'Equipo CEMIPRE',
+    etiqueta,
+    labelKey,
+    color,
+    customColor: explicitColor,
+    origen,
+    todoElDia,
+    isGoogleSynced: Boolean(googleEventId),
+    googleCalendarId,
+    googleCalendarName,
+    googleEventId,
+    googleHtmlLink,
     inicio: event.inicio,
     fin: event.fin,
     startKey: start.dateKey,
@@ -276,8 +360,52 @@ export function normalizeEvent(event) {
     isFullDayBanner,
     startTimeLabel,
     timeRangeLabel,
-    tone: getEventTone(event),
+    tone,
   };
+}
+
+export function collectCalendarLabels(normalizedEvents = []) {
+  const byKey = new Map();
+  for (const ev of normalizedEvents) {
+    const existing = byKey.get(ev.labelKey);
+    if (existing) {
+      existing.count += 1;
+      if (ev.origen === 'google') existing.hasGoogleEvents = true;
+      if (ev.origen === 'cemipre') existing.hasLocalEvents = true;
+      if (!existing.customColor && ev.customColor) {
+        existing.customColor = ev.customColor;
+        existing.color = ev.color;
+      }
+    } else {
+      byKey.set(ev.labelKey, {
+        key: ev.labelKey,
+        label: ev.etiqueta,
+        count: 1,
+        tone: ev.tone,
+        color: ev.color,
+        customColor: ev.customColor,
+        hasGoogleEvents: ev.origen === 'google',
+        hasLocalEvents: ev.origen === 'cemipre',
+        googleCalendarId: ev.googleCalendarId,
+      });
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    const aIsGoogleOnly = a.hasGoogleEvents && !a.hasLocalEvents;
+    const bIsGoogleOnly = b.hasGoogleEvents && !b.hasLocalEvents;
+    if (aIsGoogleOnly !== bIsGoogleOnly) return aIsGoogleOnly ? 1 : -1;
+    if (a.key === 'general' && b.key !== 'general') return -1;
+    if (b.key === 'general' && a.key !== 'general') return 1;
+    return a.label.localeCompare(b.label, 'es');
+  });
+}
+
+export function filterEventsByVisibleLabels(normalizedEvents = [], hiddenLabelKeys = null) {
+  if (!hiddenLabelKeys) return normalizedEvents;
+  const hiddenSet = hiddenLabelKeys instanceof Set ? hiddenLabelKeys : new Set(hiddenLabelKeys);
+  if (hiddenSet.size === 0) return normalizedEvents;
+  return normalizedEvents.filter((ev) => !hiddenSet.has(ev.labelKey));
 }
 
 export function normalizeEvents(events = []) {
