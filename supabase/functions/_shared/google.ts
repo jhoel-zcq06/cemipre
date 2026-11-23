@@ -709,10 +709,31 @@ function classifyGoogleHttpError(status: number, context: string): GoogleApiErro
   return new GoogleApiError(`Error ${status} consultando Google (${context}).`, status, 'error_api');
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchDriveWithRetry(url: string, init: RequestInit, maxAttempts = 3): Promise<Response> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await fetch(url, init);
+    const retryable = response.status === 429 || (response.status >= 500 && response.status <= 504);
+    if (!retryable || attempt === maxAttempts) {
+      return response;
+    }
+    const retryAfterSec = Number(response.headers.get('retry-after') || '0');
+    await response.body?.cancel();
+    const waitMs = retryAfterSec > 0 && retryAfterSec <= 5
+      ? retryAfterSec * 1000
+      : 400 * attempt;
+    await sleepMs(waitMs);
+  }
+  return await fetch(url, init);
+}
+
 export async function getFileMetadata(fileId: string, token: string): Promise<DriveFileMeta> {
   const fields = 'id,name,mimeType,modifiedTime,headRevisionId,webViewLink,trashed,parents,driveId,shortcutDetails';
   const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}&supportsAllDrives=true`;
-  const response = await fetch(url, {
+  const response = await fetchDriveWithRetry(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -814,7 +835,7 @@ export async function listFolderChildren(folderId: string, token: string): Promi
     });
     if (pageToken) params.set('pageToken', pageToken);
 
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    const response = await fetchDriveWithRetry(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!response.ok) {

@@ -404,24 +404,47 @@ Deno.serve(async (req: Request) => {
 
     const nextOrder = typeof topOrder?.[0]?.orden === 'number' ? topOrder[0].orden + 1 : 0;
 
-    const { data: bitacora, error: insertErr } = await adminClient
+    const baseInsertPayload = {
+      persona_id: persona.id,
+      titulo,
+      url_docs: finalDocUrl,
+      google_doc_id: created.docId,
+      orden: nextOrder,
+      drive_modified_time: driveModifiedTime,
+      drive_revision_id: driveRevisionId,
+      estado_sync: estadoSync,
+      linked_by_user_id: userId,
+    };
+
+    let { data: bitacora, error: insertErr } = await adminClient
       .from('bitacoras')
       .insert({
-        persona_id: persona.id,
-        titulo,
-        url_docs: finalDocUrl,
-        google_doc_id: created.docId,
-        orden: nextOrder,
-        drive_modified_time: driveModifiedTime,
-        drive_revision_id: driveRevisionId,
-        estado_sync: estadoSync,
-        linked_by_user_id: userId,
+        ...baseInsertPayload,
+        drive_folder_path: titulo.slice(0, 300),
       })
-      .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync')
+      .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync, drive_folder_path')
       .single();
 
-    if (insertErr) {
-      return errorResponse(`El documento se creó en Drive, pero no se pudo guardar en la plataforma: ${insertErr.message}`, 500);
+    if (
+      insertErr
+      && (insertErr.code === '42703'
+        || insertErr.code === 'PGRST204'
+        || /column .* does not exist|Could not find .* column/i.test(insertErr.message || ''))
+    ) {
+      const legacy = await adminClient
+        .from('bitacoras')
+        .insert(baseInsertPayload)
+        .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync')
+        .single();
+      bitacora = legacy.data ? { ...legacy.data, drive_folder_path: '' } : null;
+      insertErr = legacy.error;
+    }
+
+    if (insertErr || !bitacora) {
+      return errorResponse(
+        `El documento se creó en Drive, pero no se pudo guardar en la plataforma: ${insertErr?.message || 'Error desconocido'}`,
+        500,
+      );
     }
 
     await adminClient.from('actividad').insert({

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { extractDriveResourceInfo } from '../api.js';
 import {
+  FolderSourceBadge,
   Notice,
   Pagination,
   SummaryPanel,
@@ -202,6 +203,7 @@ export function UsuariosView({
                       </small>
                       <div className="log-badges">
                         <SyncStatusBadge estado={b.estado_sync} urlDocs={b.url_docs} />
+                        <FolderSourceBadge path={b.drive_folder_path} />
                       </div>
                     </div>
                     <div className="log-actions">
@@ -320,11 +322,11 @@ export function BitacorasView({
 
       <div className="toolbar-row">
         <label className="search-field toolbar-search">
-          <span className="sr-only">Buscar por título de bitácora</span>
+          <span className="sr-only">Buscar por título o carpeta de bitácora</span>
           <span aria-hidden="true">⌕</span>
           <input
             type="search"
-            placeholder="Buscar por título de bitácora…"
+            placeholder="Buscar por título o carpeta…"
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
           />
@@ -368,6 +370,7 @@ export function BitacorasView({
                 </small>
                 <div className="log-badges">
                   <SyncStatusBadge estado={b.estado_sync} urlDocs={b.url_docs} />
+                  <FolderSourceBadge path={b.drive_folder_path} />
                 </div>
               </div>
               <div className="log-actions">

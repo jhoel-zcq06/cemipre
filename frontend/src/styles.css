@@ -178,6 +178,7 @@ h2, h3, h4, p { margin-top: 0; }
 .badge-warn { background: #33291b; border-color: #745b31; color: #f1cb88; }
 .badge-error { background: #3b1c26; border-color: #8f4358; color: #ffb9c7; }
 .badge-muted { background: #1a263b; border-color: #364968; color: #b5c5df; }
+.badge-folder { background: #1d2b45; border-color: #3f5884; color: #cfe0ff; max-width: 100%; overflow-wrap: anywhere; }
 
 /* AI Summary */
 .summary-card { background: linear-gradient(110deg, #1e2c50, #1b2543); border: 1px solid #3c4874; margin: 18px 20px; border-radius: 12px; padding: 18px; }
