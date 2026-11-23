@@ -839,9 +839,17 @@ export default function App() {
     setSyncBusy(true);
     try {
       const res = await api.syncDrive(payload);
-      setSyncResult(res);
-      setMessage('Sincronización con Google Drive completada.');
-      setReload((n) => n + 1);
+      if (res?.skipped) {
+        setMessage(
+          res.reason === 'en_curso'
+            ? 'Ya hay una sincronización en curso. Intenta nuevamente en unos segundos.'
+            : (res.message || 'Sincronización omitida temporalmente.'),
+        );
+      } else {
+        setSyncResult(res);
+        setMessage('Sincronización con Google Drive completada.');
+        setReload((n) => n + 1);
+      }
     } catch (err) {
       setError(err.message);
     } finally {

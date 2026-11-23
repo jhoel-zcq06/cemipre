@@ -86,6 +86,19 @@ export function SyncStatusBadge({ estado, urlDocs }) {
   );
 }
 
+export function FolderSourceBadge({ path }) {
+  const cleanPath = String(path || '').trim();
+  if (!cleanPath) return null;
+  return (
+    <span
+      className="status-badge badge-folder"
+      title={`Carpeta de origen en Google Drive: ${cleanPath}`}
+    >
+      <span aria-hidden="true">▤</span> Carpeta: {cleanPath}
+    </span>
+  );
+}
+
 export function Pagination({ page, totalPages, totalItems, onPageChange, label = 'Paginación' }) {
   if (totalPages <= 1 && totalItems <= 15) return null;
   return (

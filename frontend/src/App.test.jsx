@@ -93,7 +93,14 @@ vi.mock('./api.js', async (importOriginal) => {
         nombre: id === 1 ? 'Rin' : 'Zelda',
         drive_folder_id: id === 1 ? 'folder-1' : '',
         bitacoras: id === 1
-          ? [{ id: 10, titulo: 'Rin-Bitacora-1', url_docs: 'https://docs.google.com/document/d/doc1/edit', actualizada: '2026-11-15T00:00:00Z', estado_sync: 'sincronizada' }]
+          ? [{
+              id: 10,
+              titulo: 'Rin-Bitacora-1',
+              url_docs: 'https://docs.google.com/document/d/doc1/edit',
+              actualizada: '2026-11-15T00:00:00Z',
+              estado_sync: 'sincronizada',
+              drive_folder_path: '2026 / Psicología',
+            }]
           : [],
       })),
       listComments: vi.fn(async () => []),
@@ -162,6 +169,8 @@ describe('Flujo de resumen IA en App', () => {
 
     const navUsers = await screen.findByRole('button', { name: 'Usuarios' });
     fireEvent.click(navUsers);
+
+    expect(await screen.findByText(/Carpeta: 2026 \/ Psicología/)).toBeInTheDocument();
 
     const generateBtn = await screen.findByRole('button', { name: 'Generar resumen IA' });
 

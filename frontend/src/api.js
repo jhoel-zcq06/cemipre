@@ -336,6 +336,13 @@ export async function formatApiError(err, fallback = 'Ocurrió un error al comun
   return err.message || fallback;
 }
 
+function isMissingColumnError(error) {
+  if (!error) return false;
+  return error.code === '42703'
+    || error.code === 'PGRST204'
+    || /column .* does not exist|Could not find .* column/i.test(error.message || '');
+}
+
 function requireClient() {
   if (!supabase) {
     throw new Error('Faltan VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY en frontend/.env.local.');
@@ -567,13 +574,24 @@ export const api = {
 
   async user(id) {
     const client = requireClient();
-    const { data, error } = await client
+    let { data, error } = await client
       .from('personas')
-      .select('id, codigo, nombre, creado, drive_folder_id, drive_folder_name, bitacoras(id, persona_id, titulo, url_docs, google_doc_id, orden, actualizada, drive_modified_time, estado_sync)')
+      .select('id, codigo, nombre, creado, drive_folder_id, drive_folder_name, bitacoras(id, persona_id, titulo, url_docs, google_doc_id, orden, actualizada, drive_modified_time, estado_sync, drive_folder_path)')
       .eq('id', id)
       .order('orden', { referencedTable: 'bitacoras', ascending: true })
       .order('id', { referencedTable: 'bitacoras', ascending: true })
       .single();
+    if (isMissingColumnError(error)) {
+      const legacy = await client
+        .from('personas')
+        .select('id, codigo, nombre, creado, drive_folder_id, drive_folder_name, bitacoras(id, persona_id, titulo, url_docs, google_doc_id, orden, actualizada, drive_modified_time, estado_sync)')
+        .eq('id', id)
+        .order('orden', { referencedTable: 'bitacoras', ascending: true })
+        .order('id', { referencedTable: 'bitacoras', ascending: true })
+        .single();
+      data = legacy.data;
+      error = legacy.error;
+    }
     if (error) throw new Error(await formatApiError(error, 'No se pudo cargar el usuario.'));
     return data;
   },
@@ -656,30 +674,43 @@ export const api = {
     const safePage = Math.max(1, page);
     const from = (safePage - 1) * pageSize;
     const to = from + pageSize - 1;
-
-    let query = client
-      .from('bitacoras')
-      .select(
-        'id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync, personas(id, codigo, nombre)',
-        { count: 'exact' },
-      )
-      .order('actualizada', { ascending: false })
-      .range(from, to);
-
     const term = search.trim();
-    if (term) {
-      const escaped = term.replace(/[,%()]/g, '');
-      query = query.ilike('titulo', `%${escaped}%`);
-    }
-    if (statusFilter === 'linked') {
-      query = query.neq('google_doc_id', '');
-    } else if (statusFilter === 'unlinked') {
-      query = query.eq('google_doc_id', '');
-    } else if (statusFilter === 'errors') {
-      query = query.in('estado_sync', ['sin_permiso', 'no_encontrada']);
-    }
+    const escaped = term.replace(/[,%()]/g, '');
 
-    const { data, error, count } = await query;
+    const buildQuery = (withFolderPath) => {
+      let query = client
+        .from('bitacoras')
+        .select(
+          withFolderPath
+            ? 'id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync, drive_folder_path, personas(id, codigo, nombre)'
+            : 'id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync, personas(id, codigo, nombre)',
+          { count: 'exact' },
+        )
+        .order('actualizada', { ascending: false })
+        .range(from, to);
+
+      if (escaped) {
+        query = withFolderPath
+          ? query.or(`titulo.ilike.%${escaped}%,drive_folder_path.ilike.%${escaped}%`)
+          : query.ilike('titulo', `%${escaped}%`);
+      }
+      if (statusFilter === 'linked') {
+        query = query.neq('google_doc_id', '');
+      } else if (statusFilter === 'unlinked') {
+        query = query.eq('google_doc_id', '');
+      } else if (statusFilter === 'errors') {
+        query = query.in('estado_sync', ['sin_permiso', 'no_encontrada']);
+      }
+      return query;
+    };
+
+    let { data, error, count } = await buildQuery(true);
+    if (isMissingColumnError(error)) {
+      const legacy = await buildQuery(false);
+      data = legacy.data;
+      error = legacy.error;
+      count = legacy.count;
+    }
     if (error) throw new Error(await formatApiError(error));
     const total = count ?? 0;
     return {
@@ -761,6 +792,7 @@ export const api = {
         google_doc_id: docId,
         drive_modified_time: doc.modified_time || null,
         drive_revision_id: doc.head_revision_id || '',
+        drive_folder_path: String(doc.folder_path || '').trim().slice(0, 300),
         estado_sync: 'sincronizada',
         orden: nextOrder++,
         linked_by_user_id: actor?.id ?? null,
@@ -771,10 +803,19 @@ export const api = {
       return { inserted: [], skipped };
     }
 
-    const { data, error } = await client
+    let { data, error } = await client
       .from('bitacoras')
       .insert(rowsToInsert)
-      .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync');
+      .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync, drive_folder_path');
+    if (isMissingColumnError(error)) {
+      const legacyRows = rowsToInsert.map(({ drive_folder_path: _omit, ...rest }) => rest);
+      const legacy = await client
+        .from('bitacoras')
+        .insert(legacyRows)
+        .select('id, persona_id, titulo, url_docs, google_doc_id, actualizada, drive_modified_time, estado_sync');
+      data = legacy.data;
+      error = legacy.error;
+    }
     if (error) throw new Error(await formatApiError(error));
 
     const inserted = data ?? [];

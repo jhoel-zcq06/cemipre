@@ -156,13 +156,17 @@ export function DrivePickerModal({
   }
 
   function handleToggleSelect(item) {
+    const folderPath = breadcrumbs.map((crumb) => crumb.name).filter(Boolean).join(' / ');
+    const enrichedItem = item.kind === 'doc' && !item.folder_path && folderPath
+      ? { ...item, folder_path: folderPath }
+      : item;
     setSelectedMap((prev) => {
       const next = new Map(prev);
-      if (next.has(item.id)) {
-        next.delete(item.id);
+      if (next.has(enrichedItem.id)) {
+        next.delete(enrichedItem.id);
       } else {
         if (!multiple) next.clear();
-        next.set(item.id, item);
+        next.set(enrichedItem.id, enrichedItem);
       }
       return next;
     });

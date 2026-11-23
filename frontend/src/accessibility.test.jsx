@@ -5,7 +5,7 @@ import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/re
 import { AppModal, Modal } from './components/Modals.jsx';
 import { DrivePickerModal } from './components/DrivePickerModal.jsx';
 import { CarpetasDriveView, AdministracionView } from './components/WorkspaceViews.jsx';
-import { Notice } from './components/SharedUI.jsx';
+import { FolderSourceBadge, Notice } from './components/SharedUI.jsx';
 import { LoginView, PendingApprovalView } from './components/LoginView.jsx';
 
 afterEach(() => {
@@ -285,9 +285,19 @@ describe('Accesibilidad de UI (Modales y Avisos aria-live)', () => {
 
     await waitFor(() => {
       expect(onConfirm).toHaveBeenCalledWith([
-        expect.objectContaining({ id: 'doc-priv-1', name: 'Bitácora Mayo' }),
-        expect.objectContaining({ id: 'doc-priv-2', name: 'Bitácora Junio' }),
+        expect.objectContaining({ id: 'doc-priv-1', name: 'Bitácora Mayo', folder_path: 'USR-001 - Rin' }),
+        expect.objectContaining({ id: 'doc-priv-2', name: 'Bitácora Junio', folder_path: 'USR-001 - Rin' }),
       ]);
     });
+  });
+
+  it('FolderSourceBadge muestra la carpeta de origen cuando existe y no renderiza nada si está vacía', () => {
+    const { container, rerender } = render(<FolderSourceBadge path="" />);
+    expect(container).toBeEmptyDOMElement();
+
+    rerender(<FolderSourceBadge path="2026 / Psicología / Evaluaciones" />);
+    const badge = screen.getByText(/Carpeta: 2026 \/ Psicología \/ Evaluaciones/);
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveAttribute('title', 'Carpeta de origen en Google Drive: 2026 / Psicología / Evaluaciones');
   });
 });
